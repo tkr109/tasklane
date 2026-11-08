@@ -127,6 +127,7 @@ receiver that must act once needs an id of its own in the body to dedupe on.
 
 **Duplicates.** Submits may carry an `Idempotency-Key` header. A unique index on
 `(team_id, idempotency_key)` means a repeat returns the original job instead of a new one.
+The batch endpoint takes no keys, so a batch sent twice queues its jobs twice.
 
 **Retries.** An attempt is counted when a worker grabs the job, so a crash mid-job still
 uses one up. The one exception is a job its type's rate limit sends straight back (see Rate
@@ -225,7 +226,11 @@ spent from in one atomic upsert (`INSERT ... ON CONFLICT DO UPDATE ... WHERE` en
    enough tokens are back). Submit responses carry `X-RateLimit-Limit` (the bucket size,
    i.e. the burst) and `X-RateLimit-Remaining` (whole tokens left). The check sits in the
    jobs controller rather than a middleware because the cost depends on the batch size.
-   The teams admin list shows `usage.jobs_last_minute` next to the plan's jobs per minute.
+   It runs before the insert, so a repeated submit that returns the original job through its
+   `Idempotency-Key` still spends a token.
+   The teams admin list shows `usage.jobs_last_minute` next to the plan's jobs per minute. It
+   counts every job the team created in the last minute, scheduled ones included, though those
+   spend no tokens.
 2. **Outgoing.** `TYPE_RATE_LIMITS` (default `email.send=10/s,webhook=200/s`) gives a type a
    bucket shared by all workers, with a burst of a tenth of a second's worth (at least 1).
    After a grab, a job of a limited type needs a token. Without one it goes straight back to
@@ -481,7 +486,9 @@ retried. `net/smtp` knows nothing of contexts, so a cancelled job cuts the conne
 ## Dashboard pages
 
 - **Overview**: queued / running / done / dead counts, queue depth vs worker count chart,
-  throughput chart, "Flood 10k jobs" demo button
+  throughput chart, "Flood 10k jobs" demo button. The queued count and the queue chart include
+  delayed jobs whose `run_at` is still in the future; the stats' `runnable`, like the scaler's
+  count, leaves them out.
 - **Jobs**: table with filters, live progress bars, bulk retry/cancel
 - **Job detail**: payload, result, timeline, attempts
 - **Workers**: live list, running jobs, heartbeat age, scaler decisions log
