@@ -56,6 +56,9 @@ services:
     environment:
       <<: *worker-env
       SCALER_DRIVER: docker
+      # SCALER_MIN=2 SCALER_MAX=2 make up runs two fixed workers, for comparisons.
+      SCALER_MIN: ${SCALER_MIN:-2}
+      SCALER_MAX: ${SCALER_MAX:-10}
       WORKER_IMAGE: tasklane-scaler
       WORKER_NETWORK: tasklane_default
       WORKER_VOLUMES: tasklane_jobdata:/data
