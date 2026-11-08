@@ -17,7 +17,7 @@ func jobEvent(jobType string, status models.Status) json.RawMessage {
 
 func TestMonitorCountsFinishedJobs(t *testing.T) {
 	e := NewEvents(nil)
-	m := NewMonitor(nil, nil, nil, e, nil, nil, 0)
+	m := NewMonitor(nil, nil, nil, nil, e, nil, nil, 0)
 
 	for range 4 {
 		e.deliver("job", jobEvent("email", models.StatusSucceeded))
@@ -49,7 +49,7 @@ func TestMonitorCountsFinishedJobs(t *testing.T) {
 
 func TestMonitorServesThePublishedStats(t *testing.T) {
 	e := NewEvents(nil)
-	m := NewMonitor(nil, nil, nil, e, nil, nil, 0)
+	m := NewMonitor(nil, nil, nil, nil, e, nil, nil, 0)
 
 	for i := range sampleHistory + 10 {
 		tick := models.StatsTick{
@@ -111,6 +111,12 @@ func TestTheBiggestEventsFit(t *testing.T) {
 	// A dozen job types with long names is more than any registry here holds.
 	limit := 1.0 / 3
 	var tick models.StatsTick
+	at := time.Now()
+	tick.Scaler = models.ScalerStatus{
+		Current: math.MaxInt32, Target: math.MaxInt32, Min: math.MaxInt32, Max: math.MaxInt32,
+		JobsPerWorker: math.MaxInt32, IntervalSeconds: 1.0 / 3, CooldownSeconds: 1.0 / 3, StepDownSeconds: 1.0 / 3,
+		ScaleDownAt: &at,
+	}
 	for range 12 {
 		tick.Types = append(tick.Types, models.TypeStats{
 			Type: "image.resize.thumbnail.large", TimeoutSeconds: 300, OutgoingPerSecond: &limit,

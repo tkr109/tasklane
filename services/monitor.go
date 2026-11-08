@@ -28,6 +28,9 @@ const (
 	heldWindow = 10 * time.Second
 	// teamsPerEvent keeps a team usage event well under the payload limit.
 	teamsPerEvent = 20
+	// decisionsShown is how many of the scaler's latest decisions the workers
+	// page gets.
+	decisionsShown = 50
 )
 
 // Monitor answers the dashboard's questions about the system as a whole. Every api
@@ -38,6 +41,7 @@ type Monitor struct {
 	jobs       *repositories.Jobs
 	workers    *repositories.Workers
 	teams      *repositories.Teams
+	scaler     *repositories.Scaler
 	events     *Events
 	types      jobs.Registry
 	typeLimits map[string]float64
@@ -61,12 +65,13 @@ type rejection struct {
 	jobs   int
 }
 
-func NewMonitor(jobsRepo *repositories.Jobs, workers *repositories.Workers, teams *repositories.Teams, events *Events,
-	types jobs.Registry, typeLimits map[string]float64, ceiling int) *Monitor {
+func NewMonitor(jobsRepo *repositories.Jobs, workers *repositories.Workers, teams *repositories.Teams,
+	scaler *repositories.Scaler, events *Events, types jobs.Registry, typeLimits map[string]float64, ceiling int) *Monitor {
 	m := &Monitor{
 		jobs:       jobsRepo,
 		workers:    workers,
 		teams:      teams,
+		scaler:     scaler,
 		events:     events,
 		types:      types,
 		typeLimits: typeLimits,
@@ -79,6 +84,11 @@ func NewMonitor(jobsRepo *repositories.Jobs, workers *repositories.Workers, team
 
 func (m *Monitor) Workers(ctx context.Context) ([]models.Worker, error) {
 	return m.workers.List(ctx)
+}
+
+// Decisions returns the scaler's latest decisions, newest first.
+func (m *Monitor) Decisions(ctx context.Context) ([]models.Decision, error) {
+	return m.scaler.Decisions(ctx, decisionsShown)
 }
 
 // Stats returns the latest published snapshot with the recent samples. If no

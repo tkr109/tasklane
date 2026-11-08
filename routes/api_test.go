@@ -74,7 +74,7 @@ func testDB(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("start postgres: %v", pgErr)
 	}
 	if _, err := pgPool.Exec(context.Background(), `
-		truncate jobs, job_events, api_keys, rate_buckets, workers restart identity;
+		truncate jobs, job_events, api_keys, rate_buckets, workers, scaler_decisions, scaler_status restart identity;
 		delete from teams where name <> 'default';
 		update team_usage set running = 0, served = 0, served_at = now()`); err != nil {
 		t.Fatalf("reset tables: %v", err)
@@ -103,7 +103,8 @@ func newAPIWith(t *testing.T, cfg config.API) *api {
 	auth := services.NewAuth(keys, cfg.AuthCacheTTL)
 	jobsRepo := repositories.NewJobs(pool)
 	events := services.NewEvents(repositories.NewEvents(pool))
-	monitor := services.NewMonitor(jobsRepo, repositories.NewWorkers(pool), repositories.NewTeams(pool), events,
+	monitor := services.NewMonitor(jobsRepo, repositories.NewWorkers(pool), repositories.NewTeams(pool),
+		repositories.NewScaler(pool), events,
 		jobs.Defaults(config.Jobs{}), map[string]float64{"flaky": 5}, cfg.QueueCeiling)
 	handler := New(
 		controllers.NewJobs(services.NewQueue(jobsRepo, jobs.Defaults(config.Jobs{})),

@@ -33,8 +33,12 @@ func (h *Dashboard) Workers(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	// The scaler will log its decisions here; until it exists there are none.
-	writeJSON(w, http.StatusOK, map[string]any{"workers": workers, "decisions": []any{}})
+	decisions, err := h.monitor.Decisions(r.Context())
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workers": workers, "decisions": decisions})
 }
 
 func (h *Dashboard) DeadGroups(w http.ResponseWriter, r *http.Request) {

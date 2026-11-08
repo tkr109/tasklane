@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tkr109/tasklane/models"
+	"github.com/tkr109/tasklane/repositories"
 )
 
 func (a *api) stats() models.Stats {
@@ -142,4 +143,66 @@ func TestTheLeaderPublishesStatsAndTeamUsage(t *testing.T) {
 	waitUntil(t, 2*time.Second, "the other api to keep a sample", func() bool {
 		return len(other.stats().Samples) > 0
 	})
+}
+
+func TestTheScalerShowsInStatsAndWorkers(t *testing.T) {
+	a := newAPI(t, time.Minute)
+	ctx := context.Background()
+	scaler := repositories.NewScaler(pgPool)
+
+	if empty := a.stats().Scaler; empty != (models.ScalerStatus{}) {
+		t.Errorf("before any scaler ran: %+v", empty)
+	}
+	at := time.Date(2026, 11, 8, 10, 0, 20, 0, time.UTC)
+	status := models.ScalerStatus{Current: 10, Target: 2, Min: 2, Max: 10, JobsPerWorker: 500, IntervalSeconds: 2,
+		CooldownSeconds: 20, StepDownSeconds: 3, ScaleDownAt: &at}
+	if err := scaler.SetStatus(ctx, status); err != nil {
+		t.Fatal(err)
+	}
+	got := a.stats().Scaler
+	if got.ScaleDownAt == nil || !got.ScaleDownAt.Equal(at) {
+		t.Fatalf("scale down at %v, want %v", got.ScaleDownAt, at)
+	}
+	got.ScaleDownAt = status.ScaleDownAt
+	if got != status {
+		t.Errorf("scaler %+v, want %+v", got, status)
+	}
+
+	for _, d := range []models.Decision{
+		{Action: "up", From: 2, To: 10, Reason: "10000 runnable, oldest wait 1s; 10 at most"},
+		{Action: "hold", From: 10, To: 10, Reason: "wants 2: waiting out the 20s cool-down before scaling down"},
+		{Action: "down", From: 10, To: 9, Reason: "queue empty, cool-down passed"},
+	} {
+		if _, err := scaler.AddDecision(ctx, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var list struct {
+		Decisions []models.Decision `json:"decisions"`
+	}
+	if code := a.call("GET", "/api/workers", adminToken, nil, &list); code != http.StatusOK {
+		t.Fatalf("workers: status %d", code)
+	}
+	if len(list.Decisions) != 3 || list.Decisions[0].Action != "down" || list.Decisions[0].To != 9 ||
+		list.Decisions[2].Action != "up" || list.Decisions[0].At.IsZero() {
+		t.Errorf("decisions %+v, want newest first", list.Decisions)
+	}
+}
+
+func TestOnlyTheLatestDecisionsAreKept(t *testing.T) {
+	newAPI(t, time.Minute)
+	ctx := context.Background()
+	scaler := repositories.NewScaler(pgPool)
+	for i := range 205 {
+		if _, err := scaler.AddDecision(ctx, models.Decision{Action: "hold", From: i, To: i, Reason: "test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var kept, oldest int
+	if err := pgPool.QueryRow(ctx, `select count(*), min(from_workers) from scaler_decisions`).Scan(&kept, &oldest); err != nil {
+		t.Fatal(err)
+	}
+	if kept != 200 || oldest != 5 {
+		t.Errorf("kept %d decisions from %d on, want the latest 200", kept, oldest)
+	}
 }

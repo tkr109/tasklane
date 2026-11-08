@@ -103,7 +103,7 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 	jobsRepo := repositories.NewJobs(pool)
 	schedules := repositories.NewSchedules(pool)
 	events := services.NewEvents(repositories.NewEvents(pool))
-	monitor := services.NewMonitor(jobsRepo, repositories.NewWorkers(pool), teamsRepo, events,
+	monitor := services.NewMonitor(jobsRepo, repositories.NewWorkers(pool), teamsRepo, repositories.NewScaler(pool), events,
 		jobs.Defaults(cfg.Jobs), cfg.Worker.TypeLimits, cfg.API.QueueCeiling)
 	// Every api runs a scheduler; the one holding the advisory lock fires schedules,
 	// and publishes the stats.
