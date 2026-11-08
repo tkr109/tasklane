@@ -44,7 +44,9 @@ the column is named `max_workers`.
 
 - When every team is busy, workers serve them in the ratio of their share weights. A team at
   its cap is skipped and its spare slots go to the others.
-- A plan switch is an admin call and applies on the next grab.
+- A plan switch is an admin call. Fair share and caps follow it on the next grab; the incoming
+  rate limit uses the plan cached with the API key, so it follows within `AUTH_CACHE_TTL` (5s
+  by default).
 
 **Rate limits**
 - Incoming: a token bucket per team. Over the limit is `429` with `Retry-After`, and every
