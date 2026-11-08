@@ -95,7 +95,8 @@ export interface Stats {
   queue_ceiling: number
   dead_groups: number
   workers: { running: number; starting: number; draining: number }
-  scaler: ScalerStatus
+  // Missing while no scaler is running.
+  scaler?: ScalerStatus
   types: JobTypeStats[]
   // One sample per second, oldest first.
   samples: Sample[]

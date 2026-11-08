@@ -36,7 +36,7 @@ export function WorkersPage() {
         <div className="stat-row">
           <Stat label="Running" value={stats.workers.running} />
           <Stat label="Starting / draining" value={`${stats.workers.starting} / ${stats.workers.draining}`} />
-          <Stat label="Target" value={stats.scaler.target} />
+          <Stat label="Target" value={scaler ? scaler.target : 'no scaler'} />
           <Stat label="Runnable jobs" value={formatNumber(stats.runnable)} />
           <Stat label="Oldest wait" value={formatDuration(stats.oldest_wait_seconds)} />
         </div>
@@ -45,11 +45,11 @@ export function WorkersPage() {
       <div className="card workers-card">
         <div className="card-h">
           <h2>Live workers</h2>
-          {scaler && (
-            <span className="sub">
-              min {scaler.min}, max {scaler.max}, {formatNumber(scaler.jobs_per_worker)} runnable jobs per worker
-            </span>
-          )}
+          <span className="sub">
+            {scaler
+              ? `min ${scaler.min}, max ${scaler.max}, ${formatNumber(scaler.jobs_per_worker)} runnable jobs per worker`
+              : 'Scaler not running, so the worker count stays as it is.'}
+          </span>
         </div>
         {data ? <WorkersTable workers={data.workers} now={now} /> : <QueryNotice error={error} what="workers" className="empty" />}
       </div>
@@ -59,7 +59,9 @@ export function WorkersPage() {
           <h2>Scaler decisions</h2>
           {scaler && <span className="sub">Checked every {scaler.interval_seconds} seconds. Every change is logged.</span>}
         </div>
-        {data ? (
+        {data && !scaler && data.decisions.length === 0 ? (
+          <p className="card-note">Scaler not running. Its decisions show up here once it starts.</p>
+        ) : data ? (
           <DecisionsTable decisions={data.decisions} now={now} />
         ) : (
           <QueryNotice error={error} what="scaler decisions" className="empty" />

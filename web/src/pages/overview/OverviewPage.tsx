@@ -60,7 +60,7 @@ export function OverviewPage() {
             <FloodButton primary />
           </div>
           <div className="card-b chart-body">
-            <QueueChart samples={stats.samples} maxWorkers={stats.scaler.max} floodAt={startedAt} />
+            <QueueChart samples={stats.samples} maxWorkers={stats.scaler?.max} floodAt={startedAt} />
           </div>
         </div>
         <AutoscalerCard stats={stats} decisions={workers?.decisions} now={now} />

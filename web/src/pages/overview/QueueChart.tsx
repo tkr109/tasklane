@@ -22,7 +22,8 @@ interface Point {
 
 interface QueueChartProps {
   samples: Sample[]
-  maxWorkers: number
+  // The scaler's max; without a scaler the axis fits the samples.
+  maxWorkers: number | undefined
   floodAt: number | null
 }
 
@@ -52,7 +53,8 @@ export function QueueChart({ samples, maxWorkers, floodAt }: QueueChartProps) {
   const last = data.at(-1)?.at ?? 0
   const ticks: number[] = []
   for (let t = last; t >= first; t -= TICK_EVERY_MS) ticks.unshift(t)
-  const workerTicks = Array.from({ length: 6 }, (_, i) => (maxWorkers * i) / 5)
+  const workerMax = maxWorkers ?? Math.max(5, Math.ceil(Math.max(...data.map((p) => p.workers)) / 5) * 5)
+  const workerTicks = Array.from({ length: 6 }, (_, i) => (workerMax * i) / 5)
 
   // Only mark the points where the worker count changed.
   const changeDot = ({ cx, cy, index }: DotItemDotProps) =>
@@ -85,7 +87,7 @@ export function QueueChart({ samples, maxWorkers, floodAt }: QueueChartProps) {
             yAxisId="workers"
             orientation="right"
             width={30}
-            domain={[0, maxWorkers]}
+            domain={[0, workerMax]}
             ticks={workerTicks}
             tickLine={false}
             axisLine={false}
