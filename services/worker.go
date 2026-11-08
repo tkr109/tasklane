@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tkr109/tasklane/config"
@@ -32,6 +33,8 @@ type Worker struct {
 
 	wake    chan struct{}
 	running sync.WaitGroup
+	// done counts the jobs this worker has finished; heartbeats report it.
+	done atomic.Int64
 	// held is when each rate limited type is due its next token. Only the grab
 	// loop touches it.
 	held map[string]time.Time
@@ -57,7 +60,7 @@ func NewWorker(repo *repositories.Jobs, workers *repositories.Workers, buckets *
 // after that is abandoned, and the reaper requeues it once the lease runs out.
 func (w *Worker) Run(ctx context.Context) error {
 	log := slog.With("worker", w.id)
-	if err := w.workers.Heartbeat(ctx, w.id, w.host); err != nil {
+	if err := w.workers.Heartbeat(ctx, w.id, w.host, 0); err != nil {
 		return fmt.Errorf("register worker: %w", err)
 	}
 	log.Info("worker started", "concurrency", w.cfg.Concurrency, "types", w.types.Names(), "limits", w.cfg.TypeLimits)
@@ -75,6 +78,11 @@ func (w *Worker) Run(ctx context.Context) error {
 	w.loop(ctx, jobCtx)
 
 	log.Info("worker draining", "grace", w.cfg.ShutdownGrace)
+	drainCtx, cancelDrain := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	if err := w.workers.Drain(drainCtx, w.id); err != nil {
+		log.Warn("mark the worker draining", "err", err)
+	}
+	cancelDrain()
 	if !waitFor(&w.running, w.cfg.ShutdownGrace) {
 		log.Warn("grace period over, leaving unfinished jobs to the reaper")
 		cancelJobs()
@@ -84,7 +92,7 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if err := w.workers.Remove(cleanupCtx, w.id); err != nil {
+	if err := w.workers.Remove(cleanupCtx, w.id, w.done.Load()); err != nil {
 		log.Warn("remove worker row", "err", err)
 	}
 	log.Info("worker stopped")
@@ -100,7 +108,7 @@ func (w *Worker) heartbeat(ctx context.Context) {
 			return
 		case <-t.C:
 		}
-		if err := w.workers.Heartbeat(ctx, w.id, w.host); err != nil && ctx.Err() == nil {
+		if err := w.workers.Heartbeat(ctx, w.id, w.host, w.done.Load()); err != nil && ctx.Err() == nil {
 			slog.Warn("heartbeat", "worker", w.id, "err", err)
 		}
 	}
@@ -266,7 +274,9 @@ func (w *Worker) execute(jobCtx context.Context, job models.Job) {
 	}
 	if err != nil {
 		log.Error("record job outcome", "err", err)
+		return
 	}
+	w.done.Add(1)
 }
 
 func (w *Worker) fail(ctx context.Context, log *slog.Logger, job models.Job, jobErr error) error {
