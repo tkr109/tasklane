@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { DeadGroup } from '../../api/types'
-import { formatAgo, formatNumber } from '../../lib/format'
+import { formatAgo, formatNumber, plural } from '../../lib/format'
 import { GroupJobs } from './GroupJobs'
 import { Sparkline } from './Sparkline'
 
@@ -16,6 +16,7 @@ export function DeadGroupCard({ group, now, leaving, teamName, onRetry }: DeadGr
   const [open, setOpen] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const count = formatNumber(group.count)
+  const jobs = plural(group.count, 'job')
 
   return (
     <div className={leaving ? 'card group leaving' : 'card group'}>
@@ -23,7 +24,7 @@ export function DeadGroupCard({ group, now, leaving, teamName, onRetry }: DeadGr
         <div>
           <div>
             <span className="err">{group.pattern}</span> <span className="faint">·</span>{' '}
-            <span className="cnt">{count} jobs</span>
+            <span className="cnt">{jobs}</span>
           </div>
           {group.error !== group.pattern && (
             <div className="latest-err" title={group.error}>
@@ -45,7 +46,7 @@ export function DeadGroupCard({ group, now, leaving, teamName, onRetry }: DeadGr
           </button>
           {confirming ? (
             <span className="confirm">
-              Queue {count} jobs again?
+              Queue {jobs} again?
               <button
                 className="btn sm primary"
                 onClick={() => {
