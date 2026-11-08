@@ -126,7 +126,7 @@ func outputFormat(f string) (string, error) {
 }
 
 // loadSource fetches an http(s) source. Anything else, such as the dashboard's
-// s3:// flood payload, gets a built-in sample, so demos need no network.
+// sample:gradient or an s3:// path, gets a built-in sample, so demos need no network.
 func loadSource(ctx context.Context, source string) (image.Image, error) {
 	if !strings.HasPrefix(source, "http://") && !strings.HasPrefix(source, "https://") {
 		return sample(source), nil
