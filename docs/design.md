@@ -182,7 +182,7 @@ GET    /healthz
 4. Priorities with aging, fairness, worker caps
 5. Rate limits (incoming, outgoing, overload)
 6. Delayed + repeating jobs, scheduler leader lock
-7. Events over Redis + SSE, progress
+7. Events over Postgres `NOTIFY` + SSE, progress
 8. Scaler with Docker
 9. Real jobs: webhook, image resize, email
 10. Dashboard
