@@ -67,7 +67,7 @@ func testDB(t *testing.T) *pgxpool.Pool {
 
 	// Truncating skips the trigger that counts running jobs, so reset the counts too.
 	if _, err := pgPool.Exec(context.Background(), `
-		truncate jobs, job_events, workers restart identity;
+		truncate jobs, job_events, workers, rate_buckets restart identity;
 		delete from teams where name <> 'default';
 		update team_usage set running = 0, served = 0, served_at = now()`); err != nil {
 		t.Fatalf("reset tables: %v", err)

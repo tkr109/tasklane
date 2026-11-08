@@ -73,7 +73,7 @@ func testDB(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("start postgres: %v", pgErr)
 	}
 	if _, err := pgPool.Exec(context.Background(), `
-		truncate jobs, job_events, api_keys restart identity;
+		truncate jobs, job_events, api_keys, rate_buckets restart identity;
 		delete from teams where name <> 'default'`); err != nil {
 		t.Fatalf("reset tables: %v", err)
 	}
