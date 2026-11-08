@@ -102,6 +102,8 @@ func (r *Teams) Create(ctx context.Context, name string, planID int64) (models.T
 		with created as (
 			insert into teams (name, plan_id) values ($1, $2)
 			returning id, name, plan_id, created_at
+		), usage as (
+			insert into team_usage (team_id) select id from created
 		)
 		select `+teamColumns+`
 		from created t join plans p on p.id = t.plan_id`,
