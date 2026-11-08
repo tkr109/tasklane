@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/tkr109/tasklane/models"
 	"github.com/tkr109/tasklane/services"
@@ -28,6 +29,8 @@ type jobRequest struct {
 	Payload     json.RawMessage `json:"payload"`
 	Priority    *int            `json:"priority"`
 	MaxAttempts *int            `json:"max_attempts"`
+	RunAt       *time.Time      `json:"run_at"`
+	Delay       string          `json:"delay"`
 }
 
 func (r jobRequest) spec() services.JobSpec {
@@ -36,6 +39,8 @@ func (r jobRequest) spec() services.JobSpec {
 		Payload:     r.Payload,
 		Priority:    r.Priority,
 		MaxAttempts: r.MaxAttempts,
+		RunAt:       r.RunAt,
+		Delay:       r.Delay,
 	}
 }
 

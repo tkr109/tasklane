@@ -53,6 +53,8 @@ type NewJob struct {
 	Priority       int
 	MaxAttempts    int
 	IdempotencyKey string
+	// RunAt delays the job. Nil means it can run right away.
+	RunAt *time.Time
 }
 
 type JobEvent struct {

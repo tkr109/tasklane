@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/tkr109/tasklane/jobs"
 	"github.com/tkr109/tasklane/models"
@@ -23,14 +24,18 @@ const (
 	maxKeyLength       = 255
 	defaultListLimit   = 50
 	maxListLimit       = 200
+	maxDelay           = 365 * 24 * time.Hour
 )
 
-// JobSpec is what a caller asks for. Nil fields get defaults.
+// JobSpec is what a caller asks for. Nil fields get defaults. A job runs right
+// away unless it gives RunAt or a Delay such as "30m".
 type JobSpec struct {
 	Type        string
 	Payload     json.RawMessage
 	Priority    *int
 	MaxAttempts *int
+	RunAt       *time.Time
+	Delay       string
 }
 
 type Queue struct {
@@ -95,7 +100,36 @@ func (q *Queue) newJob(teamID int64, spec JobSpec) (models.NewJob, error) {
 	if len(nj.Payload) == 0 || bytes.Equal(nj.Payload, []byte("null")) {
 		nj.Payload = json.RawMessage("{}")
 	}
+	runAt, err := startTime(spec.RunAt, spec.Delay, time.Now())
+	if err != nil {
+		return nj, err
+	}
+	nj.RunAt = runAt
 	return nj, nil
+}
+
+// startTime is when a job asked to run at, or after delay, may start. Nil means
+// right away, which is also what a time in the past gets: a backdated job would
+// otherwise jump the queue through aging.
+func startTime(at *time.Time, delay string, now time.Time) (*time.Time, error) {
+	if at != nil && delay != "" {
+		return nil, fmt.Errorf("%w: give run_at or delay, not both", ErrInvalid)
+	}
+	if delay != "" {
+		d, err := time.ParseDuration(delay)
+		if err != nil || d < 0 {
+			return nil, fmt.Errorf("%w: delay %q is not a duration like 90s or 2h30m", ErrInvalid, delay)
+		}
+		start := now.Add(d)
+		at = &start
+	}
+	if at == nil || !at.After(now) {
+		return nil, nil
+	}
+	if at.Sub(now) > maxDelay {
+		return nil, fmt.Errorf("%w: a job can be delayed by a year at most", ErrInvalid)
+	}
+	return at, nil
 }
 
 // List returns a page of jobs and the cursor for the next page, which is 0 when

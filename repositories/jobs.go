@@ -51,15 +51,15 @@ func collectJobs(rows pgx.Rows) ([]models.Job, error) {
 func (r *Jobs) Create(ctx context.Context, nj models.NewJob) (job models.Job, created bool, err error) {
 	job, err = scanJob(r.db.QueryRow(ctx, `
 		with inserted as (
-			insert into jobs (team_id, type, payload, priority, max_attempts, idempotency_key)
-			values ($1, $2, $3, $4, $5, nullif($6, ''))
+			insert into jobs (team_id, type, payload, priority, max_attempts, idempotency_key, run_at)
+			values ($1, $2, $3, $4, $5, nullif($6, ''), coalesce($7, now()))
 			on conflict (team_id, idempotency_key) do nothing
 			returning `+jobColumns+`
 		), logged as (
 			insert into job_events (job_id, kind) select id, 'created' from inserted
 		)
 		select * from inserted`,
-		nj.TeamID, nj.Type, nj.Payload, nj.Priority, nj.MaxAttempts, nj.IdempotencyKey))
+		nj.TeamID, nj.Type, nj.Payload, nj.Priority, nj.MaxAttempts, nj.IdempotencyKey, nj.RunAt))
 	if err == nil {
 		r.wakeWorkers(ctx)
 		return job, true, nil
@@ -81,6 +81,7 @@ func (r *Jobs) CreateBatch(ctx context.Context, batch []models.NewJob) ([]models
 		payloads    = make([]string, len(batch))
 		priorities  = make([]int32, len(batch))
 		maxAttempts = make([]int32, len(batch))
+		runAts      = make([]*time.Time, len(batch))
 	)
 	for i, nj := range batch {
 		teams[i] = nj.TeamID
@@ -88,20 +89,21 @@ func (r *Jobs) CreateBatch(ctx context.Context, batch []models.NewJob) ([]models
 		payloads[i] = string(nj.Payload)
 		priorities[i] = int32(nj.Priority)
 		maxAttempts[i] = int32(nj.MaxAttempts)
+		runAts[i] = nj.RunAt
 	}
 
 	rows, err := r.db.Query(ctx, `
 		with inserted as (
-			insert into jobs (team_id, type, payload, priority, max_attempts)
-			select team_id, type, payload::jsonb, priority, max_attempts
-			from unnest($1::bigint[], $2::text[], $3::text[], $4::int[], $5::int[])
-				as u (team_id, type, payload, priority, max_attempts)
+			insert into jobs (team_id, type, payload, priority, max_attempts, run_at)
+			select team_id, type, payload::jsonb, priority, max_attempts, coalesce(run_at, now())
+			from unnest($1::bigint[], $2::text[], $3::text[], $4::int[], $5::int[], $6::timestamptz[])
+				as u (team_id, type, payload, priority, max_attempts, run_at)
 			returning `+jobColumns+`
 		), logged as (
 			insert into job_events (job_id, kind) select id, 'created' from inserted
 		)
 		select * from inserted order by id`,
-		teams, types, payloads, priorities, maxAttempts)
+		teams, types, payloads, priorities, maxAttempts, runAts)
 	if err != nil {
 		return nil, err
 	}
