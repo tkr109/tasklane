@@ -1,5 +1,4 @@
-import { delay, http, HttpResponse, sse } from 'msw'
-import type { LiveEvents } from '../api/live'
+import { delay, http, HttpResponse } from 'msw'
 import { JOB_STATUSES, type JobSpec, type JobStatus, type PlanName } from '../api/types'
 import { MockError, World } from './world'
 
@@ -76,14 +75,26 @@ export const handlers = [
 
   http.post('/api/dead-groups/:id/retry', ({ params }) => respond(() => world.retryDeadGroup(String(params.id)))),
 
-  sse<{ [K in keyof LiveEvents]: LiveEvents[K] }>('/api/events', ({ client, request }) => {
-    const unsubscribe = world.subscribe((event, data) => {
-      try {
-        client.send({ event, data } as Parameters<typeof client.send>[0])
-      } catch {
+  http.get('/api/events', () => {
+    const encoder = new TextEncoder()
+    let unsubscribe = () => {}
+    // A plain stream rather than msw's sse(), so a closed EventSource unsubscribes cleanly.
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        unsubscribe = world.subscribe((event, data) => {
+          try {
+            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+          } catch {
+            unsubscribe()
+          }
+        })
+      },
+      cancel() {
         unsubscribe()
-      }
+      },
     })
-    request.signal.addEventListener('abort', unsubscribe)
+    return new HttpResponse(stream, {
+      headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
+    })
   }),
 ]
