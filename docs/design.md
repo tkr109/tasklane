@@ -523,7 +523,7 @@ GET    /healthz
   events crossing api processes, replay after a reconnect, dead job groups, the scaler's
   loop on the noop driver and its leadership.
 - The Docker driver against a fake daemon on a unix socket, and a 10k flood by hand.
-- CI runs `go vet`, tests, and the web build on every push.
+- CI runs `go vet`, tests, and the web build on pushes to `main` and on pull requests.
 
 ## Build order
 
