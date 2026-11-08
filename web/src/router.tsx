@@ -1,5 +1,6 @@
 import { createBrowserRouter } from 'react-router'
 import { Layout, type RouteHandle } from './components/Layout'
+import { DeadJobsPage } from './pages/dead/DeadJobsPage'
 import { JobDetailPage } from './pages/job/JobDetailPage'
 import { JobsPage } from './pages/jobs/JobsPage'
 import { NotFoundPage } from './pages/NotFoundPage'
@@ -18,6 +19,7 @@ export const router = createBrowserRouter([
       { path: 'jobs/:id', element: <JobDetailPage />, handle: handle('Jobs / Job detail') },
       { path: 'workers', element: <WorkersPage />, handle: handle('Workers') },
       { path: 'teams', element: <TeamsPage />, handle: handle('Teams') },
+      { path: 'dead', element: <DeadJobsPage />, handle: handle('Dead jobs') },
       { path: '*', element: <NotFoundPage /> },
     ],
   },
