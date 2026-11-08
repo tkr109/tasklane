@@ -18,6 +18,7 @@ type Config struct {
 	API         API
 	Worker      Worker
 	Jobs        Jobs
+	Scaler      Scaler
 }
 
 type API struct {
@@ -67,6 +68,38 @@ type Jobs struct {
 	SMTPFrom string
 }
 
+// Scaler sizes the worker pool: it wants one worker per JobsPerWorker runnable
+// jobs, between Min and Max.
+type Scaler struct {
+	Min           int
+	Max           int
+	JobsPerWorker int
+	Interval      time.Duration
+	// Cooldown is how long the scaler must want fewer workers before it removes
+	// one, and StepDown how long it then waits between removals.
+	Cooldown time.Duration
+	StepDown time.Duration
+	// Driver is docker, or noop to only log what it would do.
+	Driver string
+	Docker Docker
+}
+
+// Docker is how the docker driver sets up the worker containers it starts.
+type Docker struct {
+	Socket  string
+	Image   string
+	Network string
+	// Volumes are binds such as "tasklane_jobdata:/data".
+	Volumes []string
+	// Env is the scaler's own settings that its workers get too, as KEY=value.
+	Env []string
+}
+
+// workerEnv is the settings a scaler passes on to its workers by default, those
+// of them that are set.
+const workerEnv = "DATABASE_URL,LOG_FORMAT,LOG_LEVEL,WORKER_CONCURRENCY,WORKER_LEASE,WORKER_SHUTDOWN_GRACE," +
+	"RETRY_BASE_DELAY,RETRY_MAX_DELAY,TYPE_RATE_LIMITS,WEBHOOK_SECRET,DATA_DIR,SMTP_HOST,SMTP_PORT,SMTP_FROM"
+
 func Load() (Config, error) {
 	l := loader{}
 	cfg := Config{
@@ -102,6 +135,22 @@ func Load() (Config, error) {
 			SMTPPort:      l.int("SMTP_PORT", 1025),
 			SMTPFrom:      l.str("SMTP_FROM", "Tasklane <noreply@tasklane.local>"),
 		},
+		Scaler: Scaler{
+			Min:           l.int("SCALER_MIN", 2),
+			Max:           l.int("SCALER_MAX", 10),
+			JobsPerWorker: l.int("JOBS_PER_WORKER", 500),
+			Interval:      l.duration("SCALER_INTERVAL", 2*time.Second),
+			Cooldown:      l.duration("SCALER_COOLDOWN", 20*time.Second),
+			StepDown:      l.duration("SCALER_STEP_DOWN", 3*time.Second),
+			Driver:        l.str("SCALER_DRIVER", "noop"),
+			Docker: Docker{
+				Socket:  l.str("DOCKER_SOCKET", "/var/run/docker.sock"),
+				Image:   l.str("WORKER_IMAGE", "tasklane:dev"),
+				Network: l.str("WORKER_NETWORK", ""),
+				Volumes: l.list("WORKER_VOLUMES", ""),
+				Env:     l.env("WORKER_ENV", workerEnv),
+			},
+		},
 	}
 	if err := cfg.LogLevel.UnmarshalText([]byte(l.str("LOG_LEVEL", "info"))); err != nil {
 		l.fail("LOG_LEVEL", err)
@@ -129,6 +178,27 @@ func Load() (Config, error) {
 	}
 	if _, err := mail.ParseAddress(cfg.Jobs.SMTPFrom); err != nil {
 		l.fail("SMTP_FROM", err)
+	}
+	if cfg.Scaler.Min < 0 {
+		l.fail("SCALER_MIN", fmt.Errorf("must not be negative"))
+	}
+	if cfg.Scaler.Max < max(cfg.Scaler.Min, 1) {
+		l.fail("SCALER_MAX", fmt.Errorf("must be at least 1 and at least SCALER_MIN"))
+	}
+	if cfg.Scaler.JobsPerWorker < 1 {
+		l.fail("JOBS_PER_WORKER", fmt.Errorf("must be at least 1"))
+	}
+	if cfg.Scaler.Interval <= 0 {
+		l.fail("SCALER_INTERVAL", fmt.Errorf("must be positive"))
+	}
+	if cfg.Scaler.Cooldown < 0 {
+		l.fail("SCALER_COOLDOWN", fmt.Errorf("must not be negative"))
+	}
+	if cfg.Scaler.StepDown < 0 {
+		l.fail("SCALER_STEP_DOWN", fmt.Errorf("must not be negative"))
+	}
+	if cfg.Scaler.Driver != "docker" && cfg.Scaler.Driver != "noop" {
+		l.fail("SCALER_DRIVER", fmt.Errorf("%q is not docker or noop", cfg.Scaler.Driver))
 	}
 	return cfg, l.err
 }
@@ -175,6 +245,29 @@ func (l *loader) duration(key string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// list reads comma separated values, skipping empty ones.
+func (l *loader) list(key, def string) []string {
+	var items []string
+	for item := range strings.SplitSeq(l.str(key, def), ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+// env reads a list of variable names and returns those that are set, as
+// KEY=value.
+func (l *loader) env(key, def string) []string {
+	var env []string
+	for _, name := range l.list(key, def) {
+		if v, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+v)
+		}
+	}
+	return env
 }
 
 // rates reads per-type limits such as "email=10/s,thumbnail=600/m". Unlike the

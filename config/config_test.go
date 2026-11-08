@@ -2,6 +2,8 @@ package config
 
 import (
 	"maps"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -30,5 +32,32 @@ func TestParseRates(t *testing.T) {
 		if _, err := parseRates(bad); err == nil {
 			t.Errorf("parseRates(%q) should fail", bad)
 		}
+	}
+}
+
+func TestScalerPassesSetSettingsOn(t *testing.T) {
+	t.Setenv("WORKER_ENV", "DATABASE_URL, SMTP_HOST,NOT_SET_ANYWHERE")
+	t.Setenv("DATABASE_URL", "postgres://db/tasklane")
+	t.Setenv("SMTP_HOST", "mailpit")
+	t.Setenv("WORKER_VOLUMES", "tasklane_jobdata:/data,")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"DATABASE_URL=postgres://db/tasklane", "SMTP_HOST=mailpit"}
+	if !slices.Equal(cfg.Scaler.Docker.Env, want) {
+		t.Errorf("env %v, want %v", cfg.Scaler.Docker.Env, want)
+	}
+	if !slices.Equal(cfg.Scaler.Docker.Volumes, []string{"tasklane_jobdata:/data"}) {
+		t.Errorf("volumes %v", cfg.Scaler.Docker.Volumes)
+	}
+}
+
+func TestScalerBoundsMustMakeSense(t *testing.T) {
+	t.Setenv("SCALER_MIN", "5")
+	t.Setenv("SCALER_MAX", "3")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "SCALER_MAX") {
+		t.Errorf("a max below the min loaded with err %v", err)
 	}
 }
