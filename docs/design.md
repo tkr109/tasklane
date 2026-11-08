@@ -339,6 +339,10 @@ type Driver interface {
   SDK and its dependencies. Workers run the scaler's own image as `worker`, labelled
   `tasklane.role=worker`, on the compose network with the `jobdata` volume, and get the
   scaler's settings named in `WORKER_ENV` (database, SMTP, data dir, concurrency, ...).
+  Apart from `WORKER_ID` they get nothing else, and the default list leaves out
+  `WORKER_POLL_INTERVAL`, `WORKER_REAP_INTERVAL`, `WORKER_HEARTBEAT_INTERVAL`,
+  `PRIORITY_AGING_STEP` and `FAIR_SHARE_WINDOW`. To change one for compose workers, set it on the scaler and add its
+  name to `WORKER_ENV`, which replaces the default list rather than adding to it.
 - `noop` keeps workers in memory and logs what it would do. It is the default outside compose
   and what the tests use.
 
