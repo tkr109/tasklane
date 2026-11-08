@@ -43,8 +43,8 @@ func TestProgressSendsAtMostOncePerInterval(t *testing.T) {
 	time.Sleep(2 * every)
 
 	got := r.all()
-	if got[0].percent != 1 || got[0].at.Sub(start) > 5*time.Millisecond {
-		t.Errorf("the first report went out as %d after %v, want 1 at once", got[0].percent, got[0].at.Sub(start))
+	if first := got[0].at.Sub(start); first < every-2*time.Millisecond {
+		t.Errorf("the first report went out after %v, want a whole interval in", first)
 	}
 	if last := got[len(got)-1].percent; last != 100 {
 		t.Errorf("the last value sent was %d, want 100", last)
@@ -64,6 +64,7 @@ func TestProgressStopDropsAWaitingReport(t *testing.T) {
 	var r recorder
 	p := newProgress(every, r.send)
 
+	time.Sleep(every)
 	p.report(10)
 	p.report(20)
 	p.stop()
@@ -72,5 +73,20 @@ func TestProgressStopDropsAWaitingReport(t *testing.T) {
 
 	if got := r.all(); len(got) != 1 || got[0].percent != 10 {
 		t.Fatalf("sent %v, want only the 10 from before stop", got)
+	}
+}
+
+func TestAJobFasterThanAnIntervalWritesNoProgress(t *testing.T) {
+	const every = 30 * time.Millisecond
+	var r recorder
+	p := newProgress(every, r.send)
+
+	p.report(50)
+	p.report(100)
+	p.stop()
+	time.Sleep(2 * every)
+
+	if got := r.all(); len(got) != 0 {
+		t.Fatalf("sent %v, want nothing from a job that ended within its first interval", got)
 	}
 }

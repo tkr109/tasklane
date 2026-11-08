@@ -365,7 +365,10 @@ short, far under `NOTIFY`'s 8000-byte limit; Go refuses to send one over 4000.
   go out on commit.
 - **Progress.** A handler may report as often as it likes. The worker writes at most one
   report every 500ms, and when the interval ends it writes the latest one it held back, so the
-  last value always lands. Each write is one `job` event, so that's about 2/s per job.
+  last value always lands. Each write is one `job` event, so that's about 2/s per job. The first
+  interval starts with the job, so one that finishes sooner writes no progress at all; its
+  outcome sets it. Most jobs in a flood are that short, and every write is a commit that queues
+  with the grabs and finishes (see `docs/benchmarks.md`).
 - **Relaying.** Every api `LISTEN`s on a connection of its own and fans out to the browsers
   on `GET /api/events` (SSE), so it doesn't matter which api a browser hits. Each event has an
   `id:`, and a `: ping` comment goes out every 15s so proxies keep the stream open. A stream

@@ -11,7 +11,9 @@ const progressEvery = 500 * time.Millisecond
 
 // progress passes a job's progress reports on at most once per interval. A report
 // that comes sooner waits for the interval to end, and only the latest waiting
-// value goes out then, so a job's last report is never lost.
+// value goes out then, so a job's last report is never lost. The first interval
+// starts with the job: one that finishes sooner writes no progress, as its
+// outcome sets it, and each write is a commit the busy queue has to wait for.
 type progress struct {
 	every time.Duration
 	send  func(percent int)
@@ -24,7 +26,7 @@ type progress struct {
 }
 
 func newProgress(every time.Duration, send func(percent int)) *progress {
-	return &progress{every: every, send: send}
+	return &progress{every: every, send: send, sentAt: time.Now()}
 }
 
 func (p *progress) report(percent int) {
