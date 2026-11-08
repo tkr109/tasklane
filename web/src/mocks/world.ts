@@ -23,6 +23,7 @@ import { clamp, hex, pick, rand, randInt } from './random'
 import {
   BACKGROUND_ARRIVALS_PER_SECOND,
   DEAD_GROUPS,
+  errorPattern,
   ADMIN_TOKEN,
   DASHBOARD_TEAM,
   JOB_TYPES,
@@ -83,10 +84,6 @@ interface MockTeam {
   tokens: number
 }
 
-interface MockDeadGroup extends DeadGroup {
-  sampleIds: number[] | null
-}
-
 type Listener = <K extends keyof LiveEvents>(event: K, data: LiveEvents[K]) => void
 
 const TICK_MS = 500
@@ -99,6 +96,21 @@ const MINUTE = 60 * SECOND
 const HOUR = 60 * MINUTE
 
 const iso = (ms: number) => new Date(ms).toISOString()
+
+// A dead group's id is its type and pattern in base64url, as the API makes it.
+const groupId = (type: string, pattern: string) =>
+  btoa(String.fromCharCode(...new TextEncoder().encode(`${type}\n${pattern}`)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '')
+
+function parseGroupId(id: string): boolean {
+  try {
+    return atob(id.replace(/-/g, '+').replace(/_/g, '/')).includes('\n')
+  } catch {
+    return false
+  }
+}
 
 // Times in the event stream come from Postgres, which writes UTC as +00:00.
 const pgTime = (at: string) => at.replace(/Z$/, '+00:00')
@@ -122,7 +134,7 @@ export class World {
   private workers: MockWorker[] = []
   private teams: MockTeam[]
   private decisions: ScalerDecision[] = []
-  private deadGroups: MockDeadGroup[]
+  private deadGroups: DeadGroup[]
   private samples: Stats['samples'] = []
 
   private queued = 46
@@ -159,10 +171,11 @@ export class World {
       rejected: 0,
       tokens: planByName(seed.plan).burst,
     }))
-    this.deadGroups = DEAD_GROUPS.map((g, i) => ({
-      id: `g${i + 1}`,
-      error: g.error,
+    this.deadGroups = DEAD_GROUPS.map((g) => ({
+      id: groupId(g.type, errorPattern(g.error)),
       type: g.type,
+      pattern: errorPattern(g.error),
+      error: g.error,
       count: g.count,
       teams: g.teams,
       first_at: iso(now - g.firstHoursAgo * HOUR),
@@ -170,12 +183,13 @@ export class World {
       hourly: Array.from({ length: 24 }, (_, h) =>
         Math.round(Math.max(0, (g.spiking && h > 18 ? 9 : 1.5) + Math.sin(h / 2 + g.count) * 1.2 + rand(0, 2)) * (g.count / 400)),
       ),
-      sampleIds: null,
+      sample_ids: [],
     }))
     this.dead = this.deadGroups.reduce((sum, g) => sum + g.count, 0)
     this.seedWorkers(now)
     this.seedHistory(now)
     this.seedJobs()
+    this.seedDeadSamples()
     window.setInterval(() => this.tick(), TICK_MS)
   }
 
@@ -343,29 +357,45 @@ export class World {
   }
 
   deadGroupsResponse() {
-    const groups = this.deadGroups.map(({ sampleIds, ...group }) => group)
+    const groups = this.deadGroups
     return { groups, total: groups.reduce((sum, g) => sum + g.count, 0) }
   }
 
   deadGroupJobs(groupId: string, limit: number): Job[] {
-    const group = this.deadGroupById(groupId)
-    group.sampleIds ??= Array.from({ length: 5 }, () => {
-      const team = this.teamByName(DASHBOARD_TEAM)
-      const ageSeconds = (Date.now() - new Date(group.last_at).getTime()) / SECOND + rand(30, 900)
-      return this.seedJob(team, 'dead', ageSeconds, { type: group.type, error: group.error }).id
-    })
-    return group.sampleIds
+    const group = this.deadGroups.find((g) => g.id === groupId)
+    if (!group && !parseGroupId(groupId)) throw new MockError(404, 'dead job group not found')
+    return (group?.sample_ids ?? [])
       .map((id) => this.jobs.get(id))
-      .filter((job): job is MockJob => job !== undefined)
+      .filter((job): job is MockJob => job?.status === 'dead')
       .slice(0, limit)
       .map((job) => this.toJob(job))
   }
 
   retryDeadGroup(groupId: string) {
-    const group = this.deadGroupById(groupId)
+    const group = this.deadGroups.find((g) => g.id === groupId)
+    // Like the API, an id that names a group with nothing left in it retries nothing.
+    if (!group) {
+      if (!parseGroupId(groupId)) throw new MockError(404, 'dead job group not found')
+      return { retried: 0 }
+    }
     this.deadGroups = this.deadGroups.filter((g) => g !== group)
     this.dead = Math.max(0, this.dead - group.count)
     this.queued += group.count
+    const now = Date.now()
+    for (const id of group.sample_ids) {
+      const job = this.jobs.get(id)
+      if (job?.status !== 'dead') continue
+      Object.assign(job, {
+        status: 'queued',
+        attempts: 0,
+        progress: 0,
+        run_at: iso(now),
+        finished_at: undefined,
+        updated_at: iso(now),
+      })
+      this.addEvent(job, 'retried', now, 'retried with its dead job group')
+      this.emitJob(job)
+    }
     return { retried: group.count }
   }
 
@@ -692,7 +722,7 @@ export class World {
   private pruneJobs() {
     if (this.jobs.size <= MAX_TRACKED_JOBS) return
     const finished: JobStatus[] = ['succeeded', 'cancelled', 'dead']
-    const protectedIds = new Set(this.deadGroups.flatMap((g) => g.sampleIds ?? []))
+    const protectedIds = new Set(this.deadGroups.flatMap((g) => g.sample_ids))
     for (const job of [...this.jobs.values()].sort((a, b) => a.id - b.id)) {
       if (this.jobs.size <= MAX_TRACKED_JOBS - 40) break
       if (finished.includes(job.status) && !protectedIds.has(job.id)) this.jobs.delete(job.id)
@@ -760,6 +790,16 @@ export class World {
         seeded = true
       }
       this.seedJob(this.teamByName(DASHBOARD_TEAM), status, age)
+    }
+  }
+
+  private seedDeadSamples() {
+    const team = this.teamByName(DASHBOARD_TEAM)
+    for (const group of this.deadGroups) {
+      group.sample_ids = Array.from({ length: 5 }, () => {
+        const ageSeconds = (Date.now() - new Date(group.last_at).getTime()) / SECOND + rand(30, 900)
+        return this.seedJob(team, 'dead', ageSeconds, { type: group.type, error: group.error }).id
+      })
     }
   }
 
@@ -968,11 +1008,5 @@ export class World {
 
   private teamByName(name: string) {
     return this.teams.find((t) => t.seed.name === name)!
-  }
-
-  private deadGroupById(id: string) {
-    const group = this.deadGroups.find((g) => g.id === id)
-    if (!group) throw new MockError(404, 'dead group not found')
-    return group
   }
 }

@@ -121,6 +121,13 @@ export const TEAMS: TeamSeed[] = [
   },
 ]
 
+// Roughly the API's normalize_error: quoted values and any word with a digit in it are blanked out.
+export const errorPattern = (error: string) =>
+  error
+    .replace(/"[^"]*"/g, '<str>')
+    .replace(/[^\s:]*\d[^\s:]*/g, '<n>')
+    .slice(0, 200)
+
 export interface DeadGroupSeed {
   error: string
   type: string
@@ -159,7 +166,7 @@ export const DEAD_GROUPS: DeadGroupSeed[] = [
     lastMinutesAgo: 42,
   },
   {
-    error: 'webhook 410 Gone: endpoint was removed by the receiver',
+    error: 'webhook: dial tcp 10.0.4.17:443: connect: connection refused',
     type: 'webhook.deliver',
     count: 391,
     teams: ['northwind', 'default'],

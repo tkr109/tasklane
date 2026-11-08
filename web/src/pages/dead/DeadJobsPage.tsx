@@ -9,7 +9,7 @@ import { PageHeader } from '../../components/PageHeader'
 import { QueryNotice } from '../../components/QueryNotice'
 import { useNow } from '../../hooks/useNow'
 import { useToast } from '../../hooks/useToast'
-import { formatNumber, plural } from '../../lib/format'
+import { plural } from '../../lib/format'
 import { DeadGroupCard } from './DeadGroupCard'
 
 // Long enough for the card's fade-out to finish before it leaves the list.
@@ -36,7 +36,9 @@ export function DeadJobsPage() {
         void queryClient.invalidateQueries({ queryKey: queryKeys.stats })
       }, LEAVE_MS)
       toast(
-        `${formatNumber(retried)} jobs from "${group.error}" are back in the queue. Workers scale up if the queue needs it.`,
+        retried === 0
+          ? 'Nothing left to retry: the group was already emptied, probably by another retry.'
+          : `${plural(retried, 'job')} from "${group.pattern}" ${retried === 1 ? 'is' : 'are'} back in the queue. Workers scale up if the queue needs it.`,
       )
     },
     onError: (err) => {

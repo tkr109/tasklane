@@ -178,15 +178,20 @@ export interface TeamRate {
 }
 
 export interface DeadGroup {
+  // Opaque and URL safe.
   id: string
-  error: string
   type: string
+  // The error with ids, numbers and quoted values taken out: what the group's jobs share.
+  pattern: string
+  // The newest error in the group, as it was.
+  error: string
   count: number
   teams: string[]
   first_at: string
   last_at: string
   // Jobs that died in each of the last 24 hours, oldest first.
   hourly: number[]
+  sample_ids: number[]
 }
 
 export interface DeadGroupsResponse {

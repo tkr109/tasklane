@@ -22,9 +22,14 @@ export function DeadGroupCard({ group, now, leaving, teamName, onRetry }: DeadGr
       <div className="group-h">
         <div>
           <div>
-            <span className="err">{group.error}</span> <span className="faint">·</span>{' '}
+            <span className="err">{group.pattern}</span> <span className="faint">·</span>{' '}
             <span className="cnt">{count} jobs</span>
           </div>
+          {group.error !== group.pattern && (
+            <div className="latest-err" title={group.error}>
+              latest: <span className="mono">{group.error}</span>
+            </div>
+          )}
           <div className="group-meta">
             <span className="tag mono">{group.type}</span>
             <span>{group.teams.join(', ')}</span>
