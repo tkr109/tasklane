@@ -173,8 +173,12 @@ func TestScalerFollowsTheQueue(t *testing.T) {
 		t.Fatalf("decisions %v, want %v", steps, wantSteps)
 	}
 	waitUntil(t, 2*time.Second, "every decision event", func() bool { return len(decisions()) == len(stored) })
-	if got := decisions(); got[len(got)-1] != stored[len(stored)-1] {
-		t.Errorf("last event %+v, want %+v", got[len(got)-1], stored[len(stored)-1])
+	got := decisions()
+	event, row := got[len(got)-1], stored[len(stored)-1]
+	// The event's time comes from JSON and the row's from pgx, so their locations differ.
+	event.At, row.At = event.At.UTC(), row.At.UTC()
+	if event != row {
+		t.Errorf("last event %+v, want %+v", event, row)
 	}
 }
 
