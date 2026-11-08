@@ -9,7 +9,7 @@ import (
 	"github.com/tkr109/tasklane/services"
 )
 
-func New(jobs *controllers.Jobs, schedules *controllers.Schedules, teams *controllers.Teams, events *controllers.Events, auth *services.Auth, adminToken string, ping func(context.Context) error) http.Handler {
+func New(jobs *controllers.Jobs, schedules *controllers.Schedules, teams *controllers.Teams, dashboard *controllers.Dashboard, events *controllers.Events, auth *services.Auth, adminToken string, ping func(context.Context) error) http.Handler {
 	key := func(h http.HandlerFunc) http.Handler { return middleware.APIKey(auth, h) }
 	admin := func(h http.HandlerFunc) http.Handler { return middleware.Admin(adminToken, h) }
 
@@ -37,6 +37,7 @@ func New(jobs *controllers.Jobs, schedules *controllers.Schedules, teams *contro
 	mux.Handle("POST /api/teams/{id}/keys", admin(teams.CreateKey))
 	mux.Handle("POST /api/teams/{id}/keys/{key}/revoke", admin(teams.RevokeKey))
 
+	mux.Handle("GET /api/workers", admin(dashboard.Workers))
 	mux.Handle("GET /api/events", middleware.AdminStream(adminToken, http.HandlerFunc(events.Stream)))
 
 	return middleware.Logging(mux)

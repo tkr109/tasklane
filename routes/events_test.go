@@ -2,12 +2,19 @@ package routes
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/tkr109/tasklane/config"
+	"github.com/tkr109/tasklane/jobs"
+	"github.com/tkr109/tasklane/repositories"
+	"github.com/tkr109/tasklane/services"
 )
 
 type sseEvent struct {
@@ -218,5 +225,113 @@ func TestAReconnectReplaysWhatItMissed(t *testing.T) {
 	other := newAPI(t, time.Minute)
 	if ev := other.stream(seen.id).take(); ev.name != "reset" {
 		t.Fatalf("a reconnect to another api got %s first, want reset", ev.name)
+	}
+}
+
+// startWorker runs a worker with the default job types against the test database.
+func startWorker(t *testing.T) (stop func()) {
+	t.Helper()
+	w := services.NewWorker(repositories.NewJobs(pgPool), repositories.NewWorkers(pgPool),
+		repositories.NewRateBuckets(pgPool), jobs.Defaults(), config.Worker{
+			Concurrency:       2,
+			Lease:             2 * time.Second,
+			PollInterval:      50 * time.Millisecond,
+			ReapInterval:      100 * time.Millisecond,
+			HeartbeatInterval: 100 * time.Millisecond,
+			ShutdownGrace:     2 * time.Second,
+			RetryBaseDelay:    10 * time.Millisecond,
+			RetryMaxDelay:     50 * time.Millisecond,
+			AgingStep:         30 * time.Second,
+			FairShareWindow:   time.Minute,
+		})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+	stop = sync.OnceFunc(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("worker: %v", err)
+		}
+	})
+	t.Cleanup(stop)
+	return stop
+}
+
+type workerUpdate struct {
+	ID       string `json:"id"`
+	State    string `json:"state"`
+	JobsDone int64  `json:"jobs_done"`
+}
+
+func workerIs(t *testing.T, id, state string) func(string) bool {
+	return func(data string) bool {
+		var w workerUpdate
+		if err := json.Unmarshal([]byte(data), &w); err != nil {
+			t.Fatalf("worker event %s: %v", data, err)
+		}
+		return w.ID == id && w.State == state
+	}
+}
+
+func TestAJobsLifeReachesAStreamOnAnotherAPI(t *testing.T) {
+	a := newAPI(t, time.Minute)
+	b := newAPI(t, time.Minute)
+	_, key := a.createTeam("acme", "free")
+	jobEvents := b.stream("")
+	workerEvents := b.stream("")
+	stopWorker := startWorker(t)
+
+	// Sleep reports progress ten times over 1.5s.
+	id := a.submit(key.Key, map[string]any{"type": "sleep", "payload": map[string]float64{"seconds": 1.5}})
+	jobEvents.next("job", jobIs(t, id, "queued"))
+	worker := decodeJob(t, jobEvents.next("job", jobIs(t, id, "running")).data).LockedBy
+
+	waitUntil(t, time.Second, "the workers list to show the running job", func() bool {
+		var list struct {
+			Workers []struct {
+				ID          string `json:"id"`
+				RunningJobs []struct {
+					ID int64 `json:"id"`
+				} `json:"running_jobs"`
+			} `json:"workers"`
+			Decisions []any `json:"decisions"`
+		}
+		if code := b.call("GET", "/api/workers", adminToken, nil, &list); code != http.StatusOK || list.Decisions == nil {
+			t.Fatalf("list workers: status %d, decisions %v", code, list.Decisions)
+		}
+		for _, w := range list.Workers {
+			if w.ID == worker && len(w.RunningJobs) == 1 && w.RunningJobs[0].ID == id {
+				return true
+			}
+		}
+		return false
+	})
+
+	var progress []int
+	for {
+		j := decodeJob(t, jobEvents.next("job", func(data string) bool { return decodeJob(t, data).ID == id }).data)
+		if j.Status == "succeeded" {
+			if j.Progress != 100 {
+				t.Errorf("succeeded with progress %d", j.Progress)
+			}
+			break
+		}
+		if j.Status != "running" {
+			t.Fatalf("job went %s", j.Status)
+		}
+		progress = append(progress, j.Progress)
+	}
+	// Ten reports in 1.5s at two writes a second is three or four events.
+	if len(progress) == 0 || len(progress) > 5 {
+		t.Errorf("progress events %v, want a few and no more than five", progress)
+	}
+
+	workerEvents.next("worker", workerIs(t, worker, "running"))
+	stopWorker()
+	workerEvents.next("worker", workerIs(t, worker, "draining"))
+	gone := workerEvents.next("worker", workerIs(t, worker, "stopped"))
+	var w workerUpdate
+	if err := json.Unmarshal([]byte(gone.data), &w); err != nil || w.JobsDone != 1 {
+		t.Errorf("the stopped worker reported %d jobs done, want 1", w.JobsDone)
 	}
 }

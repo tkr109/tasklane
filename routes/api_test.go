@@ -74,7 +74,7 @@ func testDB(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("start postgres: %v", pgErr)
 	}
 	if _, err := pgPool.Exec(context.Background(), `
-		truncate jobs, job_events, api_keys, rate_buckets restart identity;
+		truncate jobs, job_events, api_keys, rate_buckets, workers restart identity;
 		delete from teams where name <> 'default'`); err != nil {
 		t.Fatalf("reset tables: %v", err)
 	}
@@ -105,6 +105,7 @@ func newAPIWith(t *testing.T, cfg config.API) *api {
 			services.NewLimits(repositories.NewRateBuckets(pool), repositories.NewJobs(pool), cfg.QueueCeiling)),
 		controllers.NewSchedules(services.NewSchedules(repositories.NewSchedules(pool), jobs.Defaults(), cfg.MaxSchedulesPerTeam)),
 		controllers.NewTeams(services.NewTeams(repositories.NewTeams(pool), keys, auth)),
+		controllers.NewDashboard(services.NewMonitor(repositories.NewWorkers(pool))),
 		controllers.NewEvents(events),
 		auth, adminToken, pool.Ping,
 	)
@@ -361,7 +362,7 @@ func TestAdminRoutes(t *testing.T) {
 		t.Fatalf("teams = %+v", teams.Teams)
 	}
 
-	off := httptest.NewServer(New(controllers.NewJobs(nil, nil), controllers.NewSchedules(nil), controllers.NewTeams(nil), controllers.NewEvents(nil), nil, "", nil))
+	off := httptest.NewServer(New(controllers.NewJobs(nil, nil), controllers.NewSchedules(nil), controllers.NewTeams(nil), controllers.NewDashboard(nil), controllers.NewEvents(nil), nil, "", nil))
 	defer off.Close()
 	resp, err := http.Get(off.URL + "/api/teams")
 	if err != nil {
