@@ -69,8 +69,9 @@ There is no `utils/` folder; a helper lives next to the code that uses it.
 - `api_keys`: team_id, prefix (for display), sha256 hash (unique, what a key is looked up
   by), revoked_at
 - `jobs`: team_id, type, payload (jsonb), priority, status, attempts, max_attempts,
-  run_at, lease_until, locked_by, idempotency_key, progress, last_error, throttled_at
-  (when its type's rate limit last pushed it back), timestamps
+  run_at, ready_at (when its current wait began, for aging), lease_until, locked_by,
+  idempotency_key, progress, last_error, throttled_at (when its type's rate limit last
+  pushed it back), timestamps
 - `job_events`: job_id, kind, message, at (the timeline)
 - `schedules`: team_id, cron expression, timezone, job template (type, payload, priority,
   max_attempts), enabled, next_run_at, last_run_at
@@ -127,7 +128,9 @@ a grace period), then exits. Anything unfinished falls back via the lease.
 
 **Priorities.** 0 (low) to 9 (urgent), 5 by default. Effective priority grows with wait
 time (aging) so low jobs still run: `priority + waited / PRIORITY_AGING_STEP`. With the
-default step of 30s, a priority 0 job that has waited 4.5 minutes ties a fresh 9.
+default step of 30s, a priority 0 job that has waited 4.5 minutes ties a fresh 9. The wait
+counts from `ready_at`, which moves with `run_at` (a delay, a retry's backoff) except when
+a rate limit holds the job back, so a hold doesn't cost the job the priority it has built up.
 
 **Fairness.** Teams take turns, weighted by their plan's share weight. A team at its plan's
 worker cap is skipped. See Fair share below.
@@ -142,7 +145,8 @@ A grab is two queries with a decision in Go between them.
 
 1. **Backlog**, no locks. For every team under its worker cap: its weight, its served count,
    and the oldest runnable job at each priority level. That is one probe per level on the
-   `(team_id, priority, run_at, id)` index, so it stays cheap however long the queue is.
+   `(team_id, priority, ready_at, id)` index, so it stays cheap however long the queue is.
+   Only jobs in a hold have `ready_at` before `run_at`, so a probe skips at most those.
 2. **Pick.** A team's share is its served count divided by its plan weight. The lowest share
    is furthest behind, so teams are tried in that order. Inside a team, the level whose
    oldest job has the highest aged priority wins.
@@ -194,7 +198,8 @@ spent from in one atomic upsert (`INSERT ... ON CONFLICT DO UPDATE ... WHERE` en
 
 1. **Incoming.** A bucket per team, refilled at the plan's jobs per minute up to its burst.
    A submit costs 1 and a batch of N costs N; a batch bigger than the burst could never fit
-   and gets `400`. Over the limit returns `429` with `Retry-After` (whole seconds until
+   and gets `400`. A request is checked in full first, so one that would fail anyway (an
+   unknown type, a batch over 500) spends nothing. Over the limit returns `429` with `Retry-After` (whole seconds until
    enough tokens are back). Submit responses carry `X-RateLimit-Limit` (the bucket size,
    i.e. the burst) and `X-RateLimit-Remaining` (whole tokens left). The check sits in the
    jobs controller rather than a middleware because the cost depends on the batch size.
@@ -203,7 +208,8 @@ spent from in one atomic upsert (`INSERT ... ON CONFLICT DO UPDATE ... WHERE` en
    bucket shared by all workers, with a burst of a tenth of a second's worth (at least 1).
    After a grab, a job of a limited type needs a token. Without one it goes straight back to
    `queued` until the next token is due, with its attempt and its team's fair share turn
-   given back, a `throttled` event on its timeline, and `throttled_at` set. That worker then
+   given back, its `ready_at` kept, a `throttled` event on its timeline, and `throttled_at`
+   set. That worker then
    leaves the type alone until the token is due, so a saturated type doesn't spin.
    `HeldByLimit` counts the waiting jobs of every type throttled in a recent window, which
    is what the scaler should leave out.
@@ -211,7 +217,9 @@ spent from in one atomic upsert (`INSERT ... ON CONFLICT DO UPDATE ... WHERE` en
    get `503` with `Retry-After: 5` until it drains. The count is shared by every request and
    refreshed at most once a second, so a flood doesn't turn into a flood of counts.
 
-Scheduled jobs skip the incoming limit and the overload check; only submits pay.
+Scheduled jobs skip the incoming limit and the overload check; only submits pay. What
+bounds them instead is `MAX_SCHEDULES_PER_TEAM` (50): at one firing a minute at most, a team
+can queue 50 jobs a minute through schedules.
 
 ## Scheduling
 
@@ -222,7 +230,9 @@ since a backdated job would jump the queue through aging.
 **Repeating jobs.** A schedule has a cron expression (five fields, or a descriptor such as
 `@hourly` or `@every 2h`), parsed with robfig/cron's parser, and an IANA time zone (UTC by
 default). The API refuses anything firing more than once a minute. Changing a schedule
-works out its next run again from now.
+works out its next run again from now. A team can have `MAX_SCHEDULES_PER_TEAM` (50)
+schedules; one more gets `409`. A create locks the team's row while it counts, so
+concurrent creates can't pass the cap.
 
 **One leader.** Every api process runs a scheduler on a connection of its own. Each tick
 (`SCHEDULER_TICK`, 1s) it tries `pg_try_advisory_lock`; the one that gets it leads and fires
