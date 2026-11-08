@@ -120,6 +120,11 @@ func (r *Jobs) Get(ctx context.Context, teamID, id int64) (models.Job, error) {
 		`select `+jobColumns+` from jobs where id = $1 and team_id = $2`, id, teamID))
 }
 
+// Find reads a job whatever its team, for the admin dashboard.
+func (r *Jobs) Find(ctx context.Context, id int64) (models.Job, error) {
+	return scanJob(r.db.QueryRow(ctx, `select `+jobColumns+` from jobs where id = $1`, id))
+}
+
 // List returns a team's jobs newest first. f.Before is the cursor: only jobs with
 // a smaller id are returned.
 func (r *Jobs) List(ctx context.Context, teamID int64, f models.JobFilter) ([]models.Job, error) {

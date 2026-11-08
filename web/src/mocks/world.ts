@@ -242,6 +242,12 @@ export class World {
     return { ...this.toJob(job), timeline: [...job.timeline] }
   }
 
+  findJob(id: number): JobDetail {
+    const job = this.jobs.get(id)
+    if (!job) throw new MockError(404, 'job not found')
+    return { ...this.toJob(job), timeline: [...job.timeline] }
+  }
+
   submitBatch(teamId: number, specs: JobSpec[]): Job[] {
     if (specs.length === 0 || specs.length > 500) throw new MockError(400, 'invalid request: a batch holds 1 to 500 jobs')
     specs.forEach((spec, i) => {

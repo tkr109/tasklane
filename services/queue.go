@@ -182,13 +182,23 @@ func (q *Queue) List(ctx context.Context, teamID int64, f models.JobFilter) ([]m
 
 func (q *Queue) Get(ctx context.Context, teamID, id int64) (models.Job, []models.JobEvent, error) {
 	job, err := q.repo.Get(ctx, teamID, id)
+	return q.withTimeline(ctx, job, err)
+}
+
+// Find is Get for a job of any team. Only the admin dashboard may use it.
+func (q *Queue) Find(ctx context.Context, id int64) (models.Job, []models.JobEvent, error) {
+	job, err := q.repo.Find(ctx, id)
+	return q.withTimeline(ctx, job, err)
+}
+
+func (q *Queue) withTimeline(ctx context.Context, job models.Job, err error) (models.Job, []models.JobEvent, error) {
 	if errors.Is(err, repositories.ErrNotFound) {
 		return job, nil, errJobNotFound
 	}
 	if err != nil {
 		return job, nil, err
 	}
-	events, err := q.repo.Events(ctx, id)
+	events, err := q.repo.Events(ctx, job.ID)
 	return job, events, err
 }
 

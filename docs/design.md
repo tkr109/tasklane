@@ -426,6 +426,7 @@ PUT    /api/teams/{id}/plan                    admin: switch plan {plan}
 GET    /api/teams/{id}/keys                    admin
 POST   /api/teams/{id}/keys                    admin: returns the full key once
 POST   /api/teams/{id}/keys/{key}/revoke       admin
+GET    /api/admin/jobs/{id}                    admin: any team's job, detail + timeline
 GET    /api/stats                              admin: counts, rates and the last 150 samples
 GET    /api/workers                            admin: live workers, their jobs, scaler decisions
 GET    /api/dead-groups                        admin: dead jobs grouped by type and error

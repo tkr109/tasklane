@@ -47,7 +47,9 @@ real API, switch `default` to Enterprise first.
 
 The job and schedule routes run as the team of `VITE_API_KEY`. The admin routes take
 `VITE_ADMIN_TOKEN`: plans, teams and keys, `GET /api/stats`, `GET /api/workers`, the dead
-job groups, and the event stream at `GET /api/events`. `EventSource` can't send an
+job groups, and the event stream at `GET /api/events`. The job page reads through
+`GET /api/admin/jobs/{id}`, as workers and dead groups link to every team's jobs, and falls
+back to the team's key if the admin token is refused. `EventSource` can't send an
 `Authorization` header, so the stream takes the admin token as a `token` query parameter.
 
 The stream's events are typed in `src/api/live.ts`. `job`, `worker`, `stats` and

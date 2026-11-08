@@ -125,7 +125,7 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 		controllers.NewJobs(queue, limits),
 		controllers.NewSchedules(services.NewSchedules(schedules, jobs.Defaults(cfg.Jobs), cfg.API.MaxSchedulesPerTeam)),
 		controllers.NewTeams(teams),
-		controllers.NewDashboard(monitor, services.NewDeadJobs(jobsRepo)),
+		controllers.NewDashboard(monitor, services.NewDeadJobs(jobsRepo), queue),
 		controllers.NewEvents(events),
 		auth,
 		cfg.API.AdminToken,

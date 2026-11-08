@@ -7,15 +7,30 @@ import (
 	"github.com/tkr109/tasklane/services"
 )
 
-// Dashboard serves the admin reads behind the dashboard's overview, workers and
-// dead jobs pages.
+// Dashboard serves the admin reads behind the dashboard's overview, workers, dead
+// jobs and job pages.
 type Dashboard struct {
 	monitor *services.Monitor
 	dead    *services.DeadJobs
+	queue   *services.Queue
 }
 
-func NewDashboard(monitor *services.Monitor, dead *services.DeadJobs) *Dashboard {
-	return &Dashboard{monitor: monitor, dead: dead}
+func NewDashboard(monitor *services.Monitor, dead *services.DeadJobs, queue *services.Queue) *Dashboard {
+	return &Dashboard{monitor: monitor, dead: dead, queue: queue}
+}
+
+// Job reads a job of any team, since workers and dead groups link to every team's.
+func (h *Dashboard) Job(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	job, events, err := h.queue.Find(r.Context(), id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, jobDetail{Job: job, Timeline: events})
 }
 
 func (h *Dashboard) Stats(w http.ResponseWriter, r *http.Request) {

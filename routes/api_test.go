@@ -106,12 +106,12 @@ func newAPIWith(t *testing.T, cfg config.API) *api {
 	monitor := services.NewMonitor(jobsRepo, repositories.NewWorkers(pool), repositories.NewTeams(pool),
 		repositories.NewScaler(pool), events,
 		jobs.Defaults(config.Jobs{}), map[string]float64{"flaky": 5}, cfg.QueueCeiling)
+	queue := services.NewQueue(jobsRepo, jobs.Defaults(config.Jobs{}))
 	handler := New(
-		controllers.NewJobs(services.NewQueue(jobsRepo, jobs.Defaults(config.Jobs{})),
-			services.NewLimits(repositories.NewRateBuckets(pool), jobsRepo, events, cfg.QueueCeiling)),
+		controllers.NewJobs(queue, services.NewLimits(repositories.NewRateBuckets(pool), jobsRepo, events, cfg.QueueCeiling)),
 		controllers.NewSchedules(services.NewSchedules(repositories.NewSchedules(pool), jobs.Defaults(config.Jobs{}), cfg.MaxSchedulesPerTeam)),
 		controllers.NewTeams(services.NewTeams(repositories.NewTeams(pool), keys, auth)),
-		controllers.NewDashboard(monitor, services.NewDeadJobs(jobsRepo)),
+		controllers.NewDashboard(monitor, services.NewDeadJobs(jobsRepo), queue),
 		controllers.NewEvents(events),
 		auth, adminToken, pool.Ping,
 	)
@@ -230,6 +230,33 @@ func TestKeysScopeJobsToTheirTeam(t *testing.T) {
 	}
 	if code := a.call("GET", jobPath, otherKey.Key, nil, nil); code != http.StatusNotFound {
 		t.Fatalf("another team reading the job: status %d, want 404", code)
+	}
+}
+
+func TestTheAdminReadsAnyTeamsJob(t *testing.T) {
+	a := newAPI(t, time.Minute)
+	acme, acmeKey := a.createTeam("acme", "free")
+	id := a.submit(acmeKey.Key, map[string]string{"type": "sleep"})
+	path := "/api/admin/jobs/" + strconv.FormatInt(id, 10)
+
+	var job struct {
+		ID       int64 `json:"id"`
+		TeamID   int64 `json:"team_id"`
+		Timeline []struct {
+			Kind string `json:"kind"`
+		} `json:"timeline"`
+	}
+	if code := a.call("GET", path, adminToken, nil, &job); code != http.StatusOK {
+		t.Fatalf("admin reading acme's job: status %d", code)
+	}
+	if job.ID != id || job.TeamID != acme.ID || len(job.Timeline) != 1 || job.Timeline[0].Kind != "created" {
+		t.Errorf("job %+v, want acme's job %d with its timeline", job, id)
+	}
+	if code := a.call("GET", path, acmeKey.Key, nil, nil); code != http.StatusUnauthorized {
+		t.Errorf("a team key on the admin route: status %d, want 401", code)
+	}
+	if code := a.call("GET", "/api/admin/jobs/999999", adminToken, nil, nil); code != http.StatusNotFound {
+		t.Errorf("a missing job: status %d, want 404", code)
 	}
 }
 
@@ -368,7 +395,7 @@ func TestAdminRoutes(t *testing.T) {
 		t.Fatalf("teams = %+v", teams.Teams)
 	}
 
-	off := httptest.NewServer(New(controllers.NewJobs(nil, nil), controllers.NewSchedules(nil), controllers.NewTeams(nil), controllers.NewDashboard(nil, nil), controllers.NewEvents(nil), nil, "", nil))
+	off := httptest.NewServer(New(controllers.NewJobs(nil, nil), controllers.NewSchedules(nil), controllers.NewTeams(nil), controllers.NewDashboard(nil, nil, nil), controllers.NewEvents(nil), nil, "", nil))
 	defer off.Close()
 	resp, err := http.Get(off.URL + "/api/teams")
 	if err != nil {

@@ -57,6 +57,10 @@ export const handlers = [
     withTeam(request, (team) => world.getJob(team, idParam(params.id))),
   ),
 
+  http.get('/api/admin/jobs/:id', ({ params, request }) =>
+    withAdmin(request, () => world.findJob(idParam(params.id))),
+  ),
+
   http.post('/api/jobs/:id/cancel', ({ params, request }) =>
     withTeam(request, (team) => world.cancelJob(team, idParam(params.id))),
   ),
