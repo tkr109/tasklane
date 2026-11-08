@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider } from 'react-router'
 import { ApiError } from './api/client'
+import { FloodProvider } from './components/FloodProvider'
 import { ToastProvider } from './components/ToastProvider'
 import { router } from './router'
 
@@ -18,7 +19,9 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        <RouterProvider router={router} />
+        <FloodProvider>
+          <RouterProvider router={router} />
+        </FloodProvider>
       </ToastProvider>
     </QueryClientProvider>
   )
