@@ -13,7 +13,7 @@ func Sleep(ctx context.Context, payload json.RawMessage, progress Progress) erro
 		Seconds float64 `json:"seconds"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return fmt.Errorf("sleep: bad payload: %w", err)
+		return Permanent(fmt.Errorf("sleep: bad payload: %w", err))
 	}
 	if p.Seconds <= 0 {
 		p.Seconds = 5

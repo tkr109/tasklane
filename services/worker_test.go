@@ -247,6 +247,32 @@ func TestJobGoesDeadAfterMaxAttempts(t *testing.T) {
 	}
 }
 
+func TestPermanentErrorSkipsRetries(t *testing.T) {
+	pool := testDB(t)
+	ctx := context.Background()
+	types := jobs.Registry{"bad": {Timeout: time.Second, Handler: func(context.Context, json.RawMessage, jobs.Progress) error {
+		return jobs.Permanent(errors.New("bad payload"))
+	}}}
+
+	submitted, _, err := NewQueue(repositories.NewJobs(pool), types).
+		Submit(ctx, defaultTeam(t, pool), JobSpec{Type: "bad"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startWorker(t, pool, types)
+	waitUntil(t, 5*time.Second, "the job to die", func() bool {
+		return jobStatus(t, pool, submitted.ID).Status == models.StatusDead
+	})
+	job := jobStatus(t, pool, submitted.ID)
+	if job.Attempts != 1 || job.LastError != "bad payload" {
+		t.Fatalf("dead job: attempts=%d last_error=%q", job.Attempts, job.LastError)
+	}
+	if got := countEvents(t, pool, "failed"); got != 0 {
+		t.Errorf("%d failed events, want none", got)
+	}
+}
+
 func TestTimeoutCountsAsFailure(t *testing.T) {
 	pool := testDB(t)
 	ctx := context.Background()

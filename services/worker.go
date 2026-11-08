@@ -268,7 +268,7 @@ func (w *Worker) execute(jobCtx context.Context, job models.Job) {
 }
 
 func (w *Worker) fail(ctx context.Context, log *slog.Logger, job models.Job, jobErr error) error {
-	if job.Attempts >= job.MaxAttempts {
+	if job.Attempts >= job.MaxAttempts || jobs.IsPermanent(jobErr) {
 		log.Warn("job is dead", "err", jobErr)
 		return w.repo.MarkDead(ctx, job.ID, w.id, jobErr.Error())
 	}

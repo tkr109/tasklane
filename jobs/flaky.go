@@ -16,7 +16,7 @@ func Flaky(ctx context.Context, payload json.RawMessage, progress Progress) erro
 		FailRate *float64 `json:"fail_rate"`
 	}{}
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return fmt.Errorf("flaky: bad payload: %w", err)
+		return Permanent(fmt.Errorf("flaky: bad payload: %w", err))
 	}
 	rate := 0.5
 	if p.FailRate != nil {
