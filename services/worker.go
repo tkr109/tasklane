@@ -110,7 +110,7 @@ func (w *Worker) loop(ctx, jobCtx context.Context) {
 			return
 		}
 
-		job, err := w.repo.Grab(ctx, w.id, types, w.cfg.Lease)
+		job, err := grab(ctx, w.repo, w.id, types, w.cfg)
 		if err != nil {
 			<-slots
 			if !errors.Is(err, repositories.ErrNotFound) && ctx.Err() == nil {
