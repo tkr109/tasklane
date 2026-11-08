@@ -124,8 +124,6 @@ func runWorker(ctx context.Context, cfg config.Config) error {
 	}
 	defer pool.Close()
 
-	slog.Info("worker started")
-	<-ctx.Done()
-	slog.Info("worker stopped")
-	return nil
+	worker := services.NewWorker(repositories.NewJobs(pool), jobs.Defaults(), cfg.Worker)
+	return worker.Run(ctx)
 }
