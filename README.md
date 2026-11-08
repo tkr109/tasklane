@@ -39,6 +39,9 @@ on a laptop with one command, and the numbers below were measured that way.
 | Pro        | 3            | 6                | 1,000           | 2,000  |
 | Enterprise | 10           | 10               | 10,000          | 20,000 |
 
+The running jobs cap is the most jobs a team can have running at once; in the `plans` table
+the column is named `max_workers`.
+
 - When every team is busy, workers serve them in the ratio of their share weights. A team at
   its cap is skipped and its spare slots go to the others.
 - A plan switch is an admin call and applies on the next grab.

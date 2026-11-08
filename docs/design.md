@@ -67,7 +67,7 @@ There is no `utils/` folder; a helper lives next to the code that uses it.
 
 ## Data model (first cut)
 
-- `plans`: name, share weight, max concurrent workers, jobs per minute, burst
+- `plans`: name, share weight, running jobs cap (`max_workers`), jobs per minute, burst
 - `teams`: name, plan_id
 - `api_keys`: team_id, prefix (for display), sha256 hash (unique, what a key is looked up
   by), revoked_at
@@ -98,14 +98,14 @@ passes it is runnable again, just like `queued`. `dead` is the final failure.
 
 ## Plans
 
-| Plan       | Share weight | Worker cap | Jobs per minute | Burst  |
-|------------|-------------:|-----------:|----------------:|-------:|
-| Free       | 1            | 2          | 100             | 200    |
-| Pro        | 3            | 6          | 1,000           | 2,000  |
-| Enterprise | 10           | 10         | 10,000          | 20,000 |
+| Plan       | Share weight | Running jobs cap | Jobs per minute | Burst  |
+|------------|-------------:|-----------------:|----------------:|-------:|
+| Free       | 1            | 2                | 100             | 200    |
+| Pro        | 3            | 6                | 1,000           | 2,000  |
+| Enterprise | 10           | 10               | 10,000          | 20,000 |
 
-The worker cap is the most jobs a team can have running at once. Burst is twice the
-per-minute rate.
+The running jobs cap is the most jobs a team can have running at once, however many workers
+there are; the column is still named `plans.max_workers`. Burst is twice the per-minute rate.
 
 ## Core behaviour
 
@@ -147,7 +147,7 @@ counts from `ready_at`, which moves with `run_at` (a delay, a retry's backoff) e
 a rate limit holds the job back, so a hold doesn't cost the job the priority it has built up.
 
 **Fairness.** Teams take turns, weighted by their plan's share weight. A team at its plan's
-worker cap is skipped. See Fair share below.
+running jobs cap is skipped. See Fair share below.
 
 **Scheduling.** Delayed jobs are just `run_at` in the future. Repeating jobs come from
 `schedules`. Only one scheduler fires them: whoever holds a Postgres advisory lock. If that
@@ -157,8 +157,8 @@ process dies, the lock frees and another takes over. See Scheduling below.
 
 A grab is two queries with a decision in Go between them.
 
-1. **Backlog**, no locks. For every team under its worker cap: its weight, its served count,
-   and the oldest runnable job at each priority level. That is one probe per level on the
+1. **Backlog**, no locks. For every team under its running jobs cap: its weight, its served
+   count, and the oldest runnable job at each priority level. That is one probe per level on the
    `(team_id, priority, ready_at, id)` index, so it stays cheap however long the queue is.
    Only jobs in a hold have `ready_at` before `run_at`, so a probe skips at most those.
 2. **Pick.** A team's share is its served count divided by its plan weight. The lowest share
@@ -303,9 +303,9 @@ acting before another takes over.
 many workers there are. With one enterprise team flooding (cap 10) and workers running four
 jobs each, three workers fill the cap and seven more would sit idle, so the backlog says how
 many workers are wanted and the caps say how many are useful. Compose runs workers with
-`WORKER_CONCURRENCY=1`: a plan's worker cap is then a number of containers, and each one the
-scaler adds is another job running. The maths is the same at the default of four, with fewer
-containers.
+`WORKER_CONCURRENCY=1`: a plan's running jobs cap is then a number of containers, and each
+one the scaler adds is another job running. The maths is the same at the default of four, with
+fewer containers.
 
 **`JOBS_PER_WORKER` is 500.** Two workers take the everyday trickle; a 10k flood asks for 20,
 gets 10, and as it drains below 4,500 the target falls and the cool-down starts. The pool
@@ -526,7 +526,7 @@ GET    /healthz
 - Unit tests for backoff, fairness picking, scaler decisions, rate limit math, the progress
   throttle, event encoding and replay.
 - Integration tests against a real Postgres (testcontainers): double-grab, lease
-  expiry, idempotency, starvation, plan weights, worker caps, auth, leader failover,
+  expiry, idempotency, starvation, plan weights, running jobs caps, auth, leader failover,
   events crossing api processes, replay after a reconnect, dead job groups, the scaler's
   loop on the noop driver and its leadership.
 - The Docker driver against a fake daemon on a unix socket, and a 10k flood by hand.
@@ -537,7 +537,7 @@ GET    /healthz
 1. Skeleton: compose (Postgres), config, migrations, `api` with `/healthz`
 2. Jobs: submit, grab, leases, retries, dead, timeouts, clean shutdown
 3. Teams, plans, API keys, auth middleware
-4. Priorities with aging, fairness, worker caps
+4. Priorities with aging, fairness, running jobs caps
 5. Rate limits (incoming, outgoing, overload)
 6. Delayed + repeating jobs, scheduler leader lock
 7. Events over Postgres `NOTIFY` + SSE, progress
