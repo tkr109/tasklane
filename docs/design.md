@@ -73,8 +73,8 @@ There is no `utils/` folder; a helper lives next to the code that uses it.
 - `jobs`: team_id, type, payload (jsonb), priority, status, attempts, max_attempts,
   run_at, ready_at (when its current wait began, for aging), lease_until, locked_by,
   idempotency_key, progress, last_error, throttled_at (when its type's rate limit last
-  pushed it back), error_key (the shape of the last error, set when the job dies),
-  timestamps
+  pushed it back), error_key (the shape of the last error, set when the job dies), result
+  (jsonb, what the handler returned when it succeeded), timestamps
 - `job_events`: job_id, kind, message, at (the timeline)
 - `schedules`: team_id, cron expression, timezone, job template (type, payload, priority,
   max_attempts), enabled, next_run_at, last_run_at
@@ -397,6 +397,64 @@ An index on `(type, error_key, finished_at, team_id)` for dead jobs answers the 
 the counts and a group's retry without reading the table. A group's id is its type and
 pattern in base64url, so retrying one needs no table of groups. A retry requeues the group's
 jobs in one statement, with fresh attempts; as an admin action it skips the queue ceiling.
+
+## Job types
+
+A handler gets the payload and a way to report progress, and returns a result or an error:
+
+```go
+type Handler func(ctx context.Context, payload json.RawMessage, progress Progress) (result any, err error)
+```
+
+- **Result.** A non-nil result is stored as JSON in `result` when the job succeeds, and the job
+  page shows it.
+- **Errors.** A plain error is retried with backoff until `max_attempts`. `jobs.Permanent(err)`
+  marks one that retrying won't fix, such as a bad payload or a 4xx answer, and the job goes
+  straight to `dead` with the attempts it has left unused.
+- **Timeouts.** Each type has its own. Past it the job's context is cancelled, and the attempt
+  fails like any other error.
+
+| Type           | Payload                                                     | Result                            | Timeout |
+|----------------|-------------------------------------------------------------|-----------------------------------|--------:|
+| `webhook`      | `{"url", "body"}`                                           | `{"status", "body"}`              |     15s |
+| `image.resize` | `{"source", "sizes": [320, 640], "format"}`                 | `{"source", "format", "outputs"}` |      1m |
+| `email.send`   | `{"to", "subject", "text"}` or `{"to", "template", "data"}` | `{"to", "subject"}`               |     30s |
+| `sleep`        | `{"seconds": 5}`                                            | none                              |      5m |
+| `flaky`        | `{"fail_rate": 0.5}`                                        | none                              |     30s |
+
+`outputs` lists each file written as `{"path", "width", "height"}`.
+
+**Webhook.** POSTs `body` (`{}` if left out) as JSON to `url`, signed the way Stripe signs
+its webhooks: `Tasklane-Signature: t=<unix time>,v1=<hex>`, where `v1` is an HMAC-SHA256 of
+`<t>.<body>` keyed with `WEBHOOK_SECRET`. A receiver recomputes it over the raw body and turns
+away a `t` that is too old, so a captured request can't be replayed later. Redirects aren't
+followed, as one would turn the POST into a GET, so a 3xx is the answer. A 2xx succeeds; a 5xx,
+408, 429 or network error is retried; anything else is permanent. Up to 256 bytes of the reply,
+made valid UTF-8 without NULs since Postgres refuses those in text, go into the result or the
+error. Compose runs httpbin as a target: `http://httpbin:8080/post` echoes, `/status/503` fails.
+
+**image.resize.** An http(s) `source` is fetched, up to 20 MB and 40 megapixels; its header is
+read before decoding, so a small file can't claim a huge canvas. Any other source draws a
+built-in sample (`sample:gradient`, `sample:checker`, `sample:rings`, or one picked by hashing
+the source), so demos and the dashboard's flood need no network. The image is scaled with
+Catmull-Rom to each of up to 8 widths (1 to 4096, and never past the source's own, since
+enlarging only blurs), keeping its aspect ratio and reporting progress after each. Outputs go to
+`DATA_DIR/images/<hash of the source>/w<width>.<format>` through a temp file and a rename, so a
+retry or a repeat overwrites the same files and no one ever reads half a file. It reads JPEG,
+PNG, GIF and WebP and writes JPEG (quality 85) or PNG; `webp` writes JPEG, as Go's image library
+can't encode WebP, and the result's `format` says so. A 4xx fetching the source, or a source
+that isn't an image, is permanent; a 5xx or 429 is retried. In compose the workers share the
+`jobdata` volume at `/data`.
+
+**email.send.** Plain text over SMTP to `SMTP_HOST:SMTP_PORT`, from `SMTP_FROM`. Compose points
+it at Mailpit, a fake inbox at http://localhost:8025, so there is no auth or TLS. The subject and
+text come from the payload or a built-in template (`welcome`, `receipt`, `report-ready`) filled
+in from `data`; whatever the payload spells out wins, and a key the template needs but `data`
+lacks is an error rather than a blank. The subject is Q-encoded and the body quoted-printable,
+so any UTF-8 gets through. A bad payload (no valid `to`, an empty subject or text, a line break
+in the subject) and a 5xx reply, such as an unknown mailbox, are permanent; anything else is
+retried. `net/smtp` knows nothing of contexts, so a cancelled job cuts the connection instead.
+`TYPE_RATE_LIMITS` holds the type to 10 a second by default.
 
 ## Dashboard pages
 
