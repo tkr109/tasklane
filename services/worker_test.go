@@ -305,6 +305,13 @@ func TestPermanentErrorSkipsRetries(t *testing.T) {
 	if got := countEvents(t, pool, "failed"); got != 0 {
 		t.Errorf("%d failed events, want none", got)
 	}
+	var key string
+	if err := pool.QueryRow(ctx, `select coalesce(error_key, '') from jobs where id = $1`, submitted.ID).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	if key != "bad payload" {
+		t.Errorf("error_key = %q, want the job grouped by its error", key)
+	}
 }
 
 func TestTimeoutCountsAsFailure(t *testing.T) {
