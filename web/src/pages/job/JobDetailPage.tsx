@@ -20,7 +20,7 @@ export function JobDetailPage() {
   const validId = Number.isInteger(id) && id > 0
   const now = useNow()
   const toast = useToast()
-  const actions = useJobActions()
+  const actions = useJobActions(true)
   const { data: job, error } = useQuery({ ...jobQuery(id), enabled: validId })
   const { data: stats } = useQuery(statsQuery)
   const { data: teamsData } = useQuery(teamsQuery)

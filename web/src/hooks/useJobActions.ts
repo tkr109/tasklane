@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback } from 'react'
 import { ApiError, describeError } from '../api/client'
-import { cancelJob, retryJob } from '../api/jobs'
+import { cancelAnyJob, cancelJob, retryAnyJob, retryJob } from '../api/jobs'
 import { queryKeys } from '../api/keys'
 import type { Job } from '../api/types'
 import { canCancel, canRetry } from '../lib/jobs'
@@ -30,7 +30,9 @@ async function runEach(jobs: Target[], eligible: (job: Target) => boolean, actio
   return outcome
 }
 
-export function useJobActions() {
+// anyTeam sends the actions through the admin routes, for the job page, which
+// can show any team's job.
+export function useJobActions(anyTeam = false) {
   const queryClient = useQueryClient()
   const toast = useToast()
 
@@ -47,18 +49,18 @@ export function useJobActions() {
 
   const retry = useCallback(
     async (jobs: Target[]) => {
-      const outcome = await runEach(jobs, (job) => canRetry(job.status), retryJob)
+      const outcome = await runEach(jobs, (job) => canRetry(job.status), anyTeam ? retryAnyJob : retryJob)
       report(outcome, 'sent back to the queue', 'only failed, dead or cancelled jobs can be retried')
     },
-    [report],
+    [report, anyTeam],
   )
 
   const cancel = useCallback(
     async (jobs: Target[]) => {
-      const outcome = await runEach(jobs, (job) => canCancel(job.status), cancelJob)
+      const outcome = await runEach(jobs, (job) => canCancel(job.status), anyTeam ? cancelAnyJob : cancelJob)
       report(outcome, 'cancelled', 'only queued or retrying jobs can be cancelled')
     },
-    [report],
+    [report, anyTeam],
   )
 
   return { retry, cancel }

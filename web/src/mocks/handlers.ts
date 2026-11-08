@@ -69,6 +69,21 @@ export const handlers = [
     withTeam(request, (team) => world.retryJob(team, idParam(params.id))),
   ),
 
+  // Like the Go API, the admin actions look up the job's team and run the team's action.
+  http.post('/api/admin/jobs/:id/cancel', ({ params, request }) =>
+    withAdmin(request, () => {
+      const id = idParam(params.id)
+      return world.cancelJob(world.findJob(id).team_id, id)
+    }),
+  ),
+
+  http.post('/api/admin/jobs/:id/retry', ({ params, request }) =>
+    withAdmin(request, () => {
+      const id = idParam(params.id)
+      return world.retryJob(world.findJob(id).team_id, id)
+    }),
+  ),
+
   http.get('/api/schedules', ({ request }) => withTeam(request, (team) => world.listSchedules(team))),
 
   http.post('/api/schedules', async ({ request }) => {
