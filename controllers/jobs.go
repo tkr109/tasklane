@@ -112,7 +112,7 @@ func (h *Jobs) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Jobs) Get(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r)
+	id, ok := pathID(w, r, "id")
 	if !ok {
 		return
 	}
@@ -125,7 +125,7 @@ func (h *Jobs) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Jobs) Cancel(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r)
+	id, ok := pathID(w, r, "id")
 	if !ok {
 		return
 	}
@@ -138,7 +138,7 @@ func (h *Jobs) Cancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Jobs) Retry(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r)
+	id, ok := pathID(w, r, "id")
 	if !ok {
 		return
 	}
@@ -160,8 +160,8 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
-func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue(name), 10, 64)
 	if err != nil || id <= 0 {
 		writeError(w, http.StatusNotFound, services.ErrNotFound.Error())
 		return 0, false
