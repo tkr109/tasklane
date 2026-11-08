@@ -102,6 +102,7 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 	limits := services.NewLimits(repositories.NewRateBuckets(pool), jobsRepo, cfg.API.QueueCeiling)
 	handler := routes.New(
 		controllers.NewJobs(queue, limits),
+		controllers.NewSchedules(services.NewSchedules(repositories.NewSchedules(pool), jobs.Defaults())),
 		controllers.NewTeams(teams),
 		auth,
 		cfg.API.AdminToken,
