@@ -71,12 +71,14 @@ There is no `utils/` folder; a helper lives next to the code that uses it.
 - `jobs`: team_id, type, payload (jsonb), priority, status, attempts, max_attempts,
   run_at, ready_at (when its current wait began, for aging), lease_until, locked_by,
   idempotency_key, progress, last_error, throttled_at (when its type's rate limit last
-  pushed it back), timestamps
+  pushed it back), error_key (the shape of the last error, set when the job dies),
+  timestamps
 - `job_events`: job_id, kind, message, at (the timeline)
 - `schedules`: team_id, cron expression, timezone, job template (type, payload, priority,
   max_attempts), enabled, next_run_at, last_run_at
-- `workers`: id, host, started_at, last_seen_at (heartbeat). There is no current-job column:
-  a worker's running jobs are the ones whose `jobs.locked_by` is its id.
+- `workers`: id, host, state (running or draining), started_at, last_seen_at (heartbeat),
+  jobs_done (sent with each heartbeat). There is no current-job column: a worker's running
+  jobs are the ones whose `jobs.locked_by` is its id.
 - `team_usage`: team_id, running (jobs running now), served (a decaying count of jobs
   started), served_at. Used for fair share.
 - `rate_buckets`: key (`team:<id>` or `type:<name>`), tokens, updated_at
@@ -261,10 +263,57 @@ Every decision is logged and published so the dashboard can chart it.
 
 ## Live updates
 
-Workers and the API publish events (job status, progress, worker up/down, scaler decision)
-with Postgres `NOTIFY`. Every API instance `LISTEN`s and relays them to browsers over SSE, so
-it doesn't matter which instance a browser hits. Payloads stay small (ids + a few fields). Progress events are throttled to ~2/s per job. SSE event ids
-let a reconnecting browser catch up.
+Everything the dashboard shows live travels on one Postgres channel, `tasklane_events`, as
+`{"event": name, "data": {...}}`. Payloads hold ids and a few fields, with long text cut
+short, far under `NOTIFY`'s 8000-byte limit; Go refuses to send one over 4000.
+
+| Event        | Sent by                                               | Data                                                                                                 |
+|--------------|-------------------------------------------------------|------------------------------------------------------------------------------------------------------|
+| `job`        | a trigger on `jobs`, on any status or progress change | id, team_id, type, status, progress, attempts, run_at, locked_by, last_error (200 chars), updated_at |
+| `worker`     | the worker's heartbeat, drain and removal statements  | id, host, state (running, draining, stopped), started_at, last_seen_at, jobs_done                    |
+| `rejected`   | the api that answered a submit with `429`             | team_id, jobs                                                                                        |
+| `stats`      | the api leading the scheduler, every second           | the overview snapshot and one new sample                                                             |
+| `team_usage` | the same api, every second, 20 teams per event        | team_id, queued, running, jobs_last_minute, rejected_last_minute, fair_share                         |
+| `decision`   | the scaler (step 8)                                   |                                                                                                      |
+| `reset`      | an api, to its own streams                            | `{}`: refetch everything                                                                             |
+
+- **Jobs.** A trigger covers every path that changes a job (submits, grabs, finishes, holds,
+  the reaper, the scheduler), and a write that rolls back announces nothing, as notifications
+  go out on commit.
+- **Progress.** A handler may report as often as it likes. The worker writes at most one
+  report every 500ms, and when the interval ends it writes the latest one it held back, so the
+  last value always lands. Each write is one `job` event, so that's about 2/s per job.
+- **Relaying.** Every api `LISTEN`s on a connection of its own and fans out to the browsers
+  on `GET /api/events` (SSE), so it doesn't matter which api a browser hits. Each event has an
+  `id:`, and a `: ping` comment goes out every 15s so proxies keep the stream open. A stream
+  that falls 512 events behind is closed, and the browser reconnects.
+- **Catching up.** Each api numbers events `<process>-<n>` and keeps the last 2048. A browser
+  that reconnects to the same api with `Last-Event-ID` gets what it missed. An api can't replay
+  another's events, so a reconnect that lands elsewhere, or reaches back too far, gets a single
+  `reset` and should refetch. An api whose listening connection had to be replaced sends
+  `reset` too, as it may have missed events meanwhile.
+- **Stats.** Only the api leading the scheduler runs the overview query, once a second. Every
+  api relays the result and keeps the last 150 samples, so `GET /api/stats` reads memory; if no
+  stats have come for 3s, the request counts for itself. Throughput, per second and per type,
+  is counted from `job` events and refusals from `rejected` events, so neither needs a query.
+  The counts read partial indexes (queued and failed jobs, today's successes, dead jobs) or
+  small tables.
+- **Cost.** Every job change is a `NOTIFY`, and Postgres serialises the commits of
+  transactions that notify. That caps how fast jobs can change state; it's ample for a laptop,
+  and Redis pub/sub could take over behind the same service if load tests say otherwise.
+- **Auth.** The stream takes the admin token. `EventSource` can't send headers, so this one
+  route also takes it as `?token=`; the request log records the path without the query.
+
+## Dead jobs
+
+Dead jobs are grouped by type and the shape of their last error. When a job dies, a trigger
+stores `normalize_error(last_error)` in `error_key`: UUIDs become `<id>`, quoted values
+`<str>`, email addresses `<email>`, any word with a digit in it `<n>`, cut to 200 characters.
+So `connect to 10.0.0.5:443: timeout` and `connect to 10.0.0.9:443: timeout` are one group.
+An index on `(type, error_key, finished_at, team_id)` for dead jobs answers the groups page,
+the counts and a group's retry without reading the table. A group's id is its type and
+pattern in base64url, so retrying one needs no table of groups. A retry requeues the group's
+jobs in one statement, with fresh attempts; as an admin action it skips the queue ceiling.
 
 ## Dashboard pages
 
@@ -272,7 +321,7 @@ let a reconnecting browser catch up.
   throughput chart, "Flood 10k jobs" demo button
 - **Jobs**: table with filters, live progress bars, bulk retry/cancel
 - **Job detail**: payload, result, timeline, attempts
-- **Workers**: live list, current job, heartbeat age, scaler decisions log
+- **Workers**: live list, running jobs, heartbeat age, scaler decisions log
 - **Teams**: plan, usage vs limit, API keys, one-click plan switch
 - **Dead jobs**: grouped by error, retry group
 
@@ -290,8 +339,6 @@ POST   /api/schedules                          create {cron, timezone, type, pay
 GET    /api/schedules/{id}
 PUT    /api/schedules/{id}                     replace, enabled: false pauses it
 DELETE /api/schedules/{id}
-GET    /api/workers
-GET    /api/stats
 GET    /api/plans                              admin
 GET    /api/teams                              admin: teams with plan and usage
 POST   /api/teams                              admin: create {name, plan}
@@ -299,15 +346,22 @@ PUT    /api/teams/{id}/plan                    admin: switch plan {plan}
 GET    /api/teams/{id}/keys                    admin
 POST   /api/teams/{id}/keys                    admin: returns the full key once
 POST   /api/teams/{id}/keys/{key}/revoke       admin
-GET    /api/events                             SSE stream
+GET    /api/stats                              admin: counts, rates and the last 150 samples
+GET    /api/workers                            admin: live workers, their jobs, scaler decisions
+GET    /api/dead-groups                        admin: dead jobs grouped by type and error
+GET    /api/dead-groups/{id}/jobs              admin: a group's latest jobs (?limit=, 5)
+POST   /api/dead-groups/{id}/retry             admin: requeue the whole group
+GET    /api/events                             admin: SSE stream, also takes ?token=
 GET    /healthz
 ```
 
 ## Testing
 
-- Unit tests for backoff, fairness picking, scaler decisions, rate limit math.
+- Unit tests for backoff, fairness picking, scaler decisions, rate limit math, the progress
+  throttle, event encoding and replay.
 - Integration tests against a real Postgres (testcontainers): double-grab, lease
-  expiry, idempotency, starvation, plan weights, worker caps, auth, leader failover.
+  expiry, idempotency, starvation, plan weights, worker caps, auth, leader failover,
+  events crossing api processes, replay after a reconnect, dead job groups.
 - CI runs `go vet`, tests, and the web build on every push.
 
 ## Build order
