@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
+	"net"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/tkr109/tasklane/config"
@@ -25,11 +27,13 @@ type Type struct {
 type Registry map[string]Type
 
 func Defaults(cfg config.Jobs) Registry {
+	smtpAddr := net.JoinHostPort(cfg.SMTPHost, strconv.Itoa(cfg.SMTPPort))
 	return Registry{
 		"sleep":        {Handler: Sleep, Timeout: 5 * time.Minute},
 		"flaky":        {Handler: Flaky, Timeout: 30 * time.Second},
 		"webhook":      {Handler: Webhook(cfg.WebhookSecret), Timeout: 15 * time.Second},
 		"image.resize": {Handler: ImageResize(cfg.DataDir), Timeout: time.Minute},
+		"email.send":   {Handler: EmailSend(smtpAddr, cfg.SMTPFrom), Timeout: 30 * time.Second},
 	}
 }
 

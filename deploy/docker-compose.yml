@@ -43,12 +43,20 @@ services:
       LOG_FORMAT: json
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-whsec_localdev}
       DATA_DIR: /data
+      SMTP_HOST: mailpit
     volumes:
       - jobdata:/data
     stop_grace_period: 40s
     depends_on:
       postgres:
         condition: service_healthy
+
+  # A fake inbox for email.send. Read it at http://localhost:8025.
+  mailpit:
+    image: axllent/mailpit:v1.27.0
+    ports:
+      - "1025:1025"
+      - "8025:8025"
 
   # A webhook target for demos: /post echoes the request back, /status/503 fails.
   httpbin:
