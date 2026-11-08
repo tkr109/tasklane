@@ -47,7 +47,7 @@ func TestStatsCountTheQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := pgPool.Exec(ctx, `
-		insert into workers (id, host, state) values ('w-1', 'h1', 'running'), ('w-2', 'h2', 'draining')`); err != nil {
+		insert into workers (id, host, state) values ('w-1', 'h1', 'running'), ('w-2', 'h2', 'draining'), ('w-3', 'h3', 'starting')`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -62,7 +62,7 @@ func TestStatsCountTheQueue(t *testing.T) {
 	if math.Abs(stats.OldestWaitSeconds-60) > 5 {
 		t.Errorf("oldest wait %.1fs, want about 60", stats.OldestWaitSeconds)
 	}
-	if stats.Workers != (models.WorkerCounts{Running: 1, Draining: 1}) {
+	if stats.Workers != (models.WorkerCounts{Running: 1, Starting: 1, Draining: 1}) {
 		t.Errorf("workers %+v", stats.Workers)
 	}
 	if stats.Samples == nil {

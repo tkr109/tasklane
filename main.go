@@ -103,7 +103,7 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 	schedules := repositories.NewSchedules(pool)
 	events := services.NewEvents(repositories.NewEvents(pool))
 	monitor := services.NewMonitor(jobsRepo, repositories.NewWorkers(pool), teamsRepo, events,
-		jobs.Defaults(), cfg.Worker.TypeLimits, cfg.API.QueueCeiling)
+		jobs.Defaults(cfg.Jobs), cfg.Worker.TypeLimits, cfg.API.QueueCeiling)
 	// Every api runs a scheduler; the one holding the advisory lock fires schedules,
 	// and publishes the stats.
 	scheduler := services.NewScheduler(schedules, cfg.API.SchedulerTick)
@@ -118,11 +118,11 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 		background.Wait()
 	}()
 
-	queue := services.NewQueue(jobsRepo, jobs.Defaults())
+	queue := services.NewQueue(jobsRepo, jobs.Defaults(cfg.Jobs))
 	limits := services.NewLimits(repositories.NewRateBuckets(pool), jobsRepo, events, cfg.API.QueueCeiling)
 	handler := routes.New(
 		controllers.NewJobs(queue, limits),
-		controllers.NewSchedules(services.NewSchedules(schedules, jobs.Defaults(), cfg.API.MaxSchedulesPerTeam)),
+		controllers.NewSchedules(services.NewSchedules(schedules, jobs.Defaults(cfg.Jobs), cfg.API.MaxSchedulesPerTeam)),
 		controllers.NewTeams(teams),
 		controllers.NewDashboard(monitor, services.NewDeadJobs(jobsRepo)),
 		controllers.NewEvents(events),
@@ -166,7 +166,10 @@ func runWorker(ctx context.Context, cfg config.Config) error {
 	}
 	defer pool.Close()
 
+	if cfg.Jobs.WebhookSecret == "" {
+		slog.Warn("WEBHOOK_SECRET is not set, receivers can't trust webhook signatures")
+	}
 	worker := services.NewWorker(repositories.NewJobs(pool), repositories.NewWorkers(pool),
-		repositories.NewRateBuckets(pool), jobs.Defaults(), cfg.Worker)
+		repositories.NewRateBuckets(pool), jobs.Defaults(cfg.Jobs), cfg.Worker)
 	return worker.Run(ctx)
 }

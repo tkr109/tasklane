@@ -11,12 +11,12 @@ import (
 
 // Flaky does a little fake work and then fails with probability fail_rate
 // (default 0.5). It exists to exercise retries and dead jobs.
-func Flaky(ctx context.Context, payload json.RawMessage, progress Progress) error {
+func Flaky(ctx context.Context, payload json.RawMessage, progress Progress) (any, error) {
 	p := struct {
 		FailRate *float64 `json:"fail_rate"`
 	}{}
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return fmt.Errorf("flaky: bad payload: %w", err)
+		return nil, Permanent(fmt.Errorf("flaky: bad payload: %w", err))
 	}
 	rate := 0.5
 	if p.FailRate != nil {
@@ -25,12 +25,12 @@ func Flaky(ctx context.Context, payload json.RawMessage, progress Progress) erro
 
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return nil, ctx.Err()
 	case <-time.After(500 * time.Millisecond):
 	}
 	if rand.Float64() < rate {
-		return errors.New("flaky: rolled a failure")
+		return nil, errors.New("flaky: rolled a failure")
 	}
 	progress(100)
-	return nil
+	return nil, nil
 }

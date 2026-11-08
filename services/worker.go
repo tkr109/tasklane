@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -42,8 +43,12 @@ type Worker struct {
 
 func NewWorker(repo *repositories.Jobs, workers *repositories.Workers, buckets *repositories.RateBuckets, types jobs.Registry, cfg config.Worker) *Worker {
 	host, _ := os.Hostname()
+	id := cfg.ID
+	if id == "" {
+		id = fmt.Sprintf("%s-%08x", host, rand.Uint32())
+	}
 	return &Worker{
-		id:      fmt.Sprintf("%s-%08x", host, rand.Uint32()),
+		id:      id,
 		host:    host,
 		cfg:     cfg,
 		repo:    repo,
@@ -249,7 +254,7 @@ func (w *Worker) execute(jobCtx context.Context, job models.Job) {
 	progress := newProgress(progressEvery, func(percent int) {
 		w.setProgress(ctx, job.ID, percent)
 	})
-	err := runHandler(ctx, jt.Handler, job, progress.report)
+	result, err := runHandler(ctx, jt.Handler, job, progress.report)
 	progress.stop()
 
 	// The outcome is recorded even if the job's own context has just ended.
@@ -262,7 +267,7 @@ func (w *Worker) execute(jobCtx context.Context, job models.Job) {
 		log.Warn("lease lost, dropping the result", "err", err)
 		return
 	case err == nil:
-		err = w.repo.Succeed(writeCtx, job.ID, w.id)
+		err = w.repo.Succeed(writeCtx, job.ID, w.id, result)
 		log.Info("job succeeded", "took", time.Since(start))
 	case errors.Is(cause, errTimedOut):
 		err = w.fail(writeCtx, log, job, fmt.Errorf("timed out after %s", jt.Timeout))
@@ -280,7 +285,7 @@ func (w *Worker) execute(jobCtx context.Context, job models.Job) {
 }
 
 func (w *Worker) fail(ctx context.Context, log *slog.Logger, job models.Job, jobErr error) error {
-	if job.Attempts >= job.MaxAttempts {
+	if job.Attempts >= job.MaxAttempts || jobs.IsPermanent(jobErr) {
 		log.Warn("job is dead", "err", jobErr)
 		return w.repo.MarkDead(ctx, job.ID, w.id, jobErr.Error())
 	}
@@ -321,13 +326,17 @@ func (w *Worker) setProgress(ctx context.Context, jobID int64, percent int) {
 	}
 }
 
-func runHandler(ctx context.Context, h jobs.Handler, job models.Job, progress jobs.Progress) (err error) {
+func runHandler(ctx context.Context, h jobs.Handler, job models.Job, progress jobs.Progress) (result json.RawMessage, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)
 		}
 	}()
-	return h(ctx, job.Payload, progress)
+	out, err := h(ctx, job.Payload, progress)
+	if err != nil || out == nil {
+		return nil, err
+	}
+	return json.Marshal(out)
 }
 
 // waitFor reports whether wg finished within d.
