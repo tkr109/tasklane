@@ -20,7 +20,8 @@ var ErrNotFound = errors.New("not found")
 
 // Keys of the advisory locks that make sure only one process does a job at a time.
 const (
-	reaperLock int64 = 7_400_001
+	reaperLock    int64 = 7_400_001
+	schedulerLock int64 = 7_400_002
 )
 
 func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
