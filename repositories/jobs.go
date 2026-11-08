@@ -326,8 +326,25 @@ func (r *Jobs) finish(ctx context.Context, query string, args ...any) error {
 
 // ReapExpired takes back running jobs whose lease ran out because their worker
 // died or stalled. They return to the queue, or go dead if that was the last try.
+// Only one reaper runs at a time; the others find the lock taken and reap nothing.
 func (r *Jobs) ReapExpired(ctx context.Context) (int64, error) {
-	tag, err := r.db.Exec(ctx, `
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Two reapers freeing jobs of several teams would lock team rows in different
+	// orders and deadlock.
+	var locked bool
+	if err := tx.QueryRow(ctx, `select pg_try_advisory_xact_lock($1)`, reaperLock).Scan(&locked); err != nil {
+		return 0, err
+	}
+	if !locked {
+		return 0, nil
+	}
+
+	tag, err := tx.Exec(ctx, `
 		with expired as (
 			select id, locked_by from jobs
 			where status = 'running' and lease_until < now()
@@ -345,6 +362,9 @@ func (r *Jobs) ReapExpired(ctx context.Context) (int64, error) {
 		select id, 'lease_expired', format('%s stopped renewing the lease, job is %s', locked_by, status)
 		from reaped`)
 	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
 	if tag.RowsAffected() > 0 {

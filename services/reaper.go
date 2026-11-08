@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// reap runs on every worker. The query skips rows another reaper has locked, so
-// running it in many places at once is safe. It also clears out dead worker rows.
+// reap runs on every worker, and an advisory lock lets one of them reap at a
+// time. It also clears out dead worker rows.
 func (w *Worker) reap(ctx context.Context) {
 	t := time.NewTicker(w.cfg.ReapInterval)
 	defer t.Stop()
