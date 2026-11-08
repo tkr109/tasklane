@@ -17,6 +17,8 @@ type policy struct {
 	concurrency int
 	cooldown    time.Duration
 	stepDown    time.Duration
+	// interval is how often the scaler decides.
+	interval time.Duration
 
 	// fewerSince is when the scaler began wanting fewer workers than it has, and
 	// zero while it doesn't.
@@ -68,7 +70,7 @@ func (p *policy) decide(now time.Time, d models.Demand, current int) decision {
 		dec.action = "hold"
 		dec.reason = fmt.Sprintf("wants %d: waiting out the %s cool-down before scaling down", target, p.cooldown)
 	case target < current:
-		if now.Sub(p.fewerSince) < p.cooldown || now.Sub(p.lastStepDown) < p.stepDown {
+		if !p.passed(p.fewerSince, p.cooldown, now) || !p.passed(p.lastStepDown, p.stepDown, now) {
 			break
 		}
 		p.lastStepDown = now
@@ -91,6 +93,12 @@ func (p *policy) scaleDownAt() *time.Time {
 	}
 	at := p.fewerSince.Add(p.cooldown).UTC()
 	return &at
+}
+
+// passed reports whether d has gone by since t. The loop runs a little late at
+// times, so half an interval of slack keeps a 3s step from slipping to 4s.
+func (p *policy) passed(t time.Time, d time.Duration, now time.Time) bool {
+	return now.Sub(t) >= d-p.interval/2
 }
 
 func ceilDiv(a, b int) int {

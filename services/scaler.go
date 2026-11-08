@@ -55,6 +55,7 @@ func NewScaler(repo *repositories.Scaler, jobsRepo *repositories.Jobs, workers *
 			concurrency:   concurrency,
 			cooldown:      cfg.Cooldown,
 			stepDown:      cfg.StepDown,
+			interval:      cfg.Interval,
 		},
 		stopping: map[string]bool{},
 	}

@@ -1,6 +1,7 @@
 package services
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -9,7 +10,8 @@ import (
 )
 
 func newPolicy() *policy {
-	return &policy{min: 2, max: 10, jobsPerWorker: 500, concurrency: 1, cooldown: 20 * time.Second, stepDown: 3 * time.Second}
+	return &policy{min: 2, max: 10, jobsPerWorker: 500, concurrency: 1, cooldown: 20 * time.Second, stepDown: 3 * time.Second,
+		interval: time.Second}
 }
 
 // plenty is more slots than any test here asks for, so only the backlog counts.
@@ -94,6 +96,24 @@ func TestScalerScalesDownOneAtATimeAfterTheCooldown(t *testing.T) {
 	}
 	if current != 2 || p.scaleDownAt() != nil {
 		t.Errorf("ended at %d workers with a cool-down at %v", current, p.scaleDownAt())
+	}
+}
+
+func TestScalerStepsKeepTimeWhenTheLoopRunsLate(t *testing.T) {
+	p := newPolicy()
+	start := time.Now()
+	current := 10
+	var downs []int
+	for loop := range 40 {
+		// Every other loop runs 80ms late.
+		at := start.Add(time.Duration(loop)*time.Second + time.Duration(loop%2)*80*time.Millisecond)
+		if d := p.decide(at, models.Demand{}, current); d.action == "down" {
+			current = d.to
+			downs = append(downs, loop)
+		}
+	}
+	if want := []int{20, 23, 26, 29, 32, 35, 38}; !slices.Equal(downs, want) {
+		t.Errorf("stepped down on loops %v, want %v", downs, want)
 	}
 }
 
