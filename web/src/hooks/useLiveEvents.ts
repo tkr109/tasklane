@@ -1,9 +1,9 @@
 import { useQueryClient, type InfiniteData, type QueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { ApiError } from '../api/client'
+import { adminToken, ApiError } from '../api/client'
 import { queryKeys } from '../api/keys'
-import { LIVE_EVENT_NAMES, type JobUpdate, type LiveEvents, type StatsTick } from '../api/live'
-import type { JobDetail, JobPage, Stats, TeamsResponse, TeamUsage, WorkersResponse } from '../api/types'
+import { LIVE_EVENT_NAMES, type JobUpdate, type LiveEvents, type StatsTick, type TeamUsageUpdate } from '../api/live'
+import type { JobDetail, JobPage, Stats, TeamRate, TeamSummary, WorkersResponse } from '../api/types'
 
 export type LiveStatus = 'connecting' | 'live' | 'offline'
 
@@ -27,7 +27,8 @@ export function useLiveEvents(): LiveStatus {
   const [status, setStatus] = useState<LiveStatus>('connecting')
 
   useEffect(() => {
-    const source = new EventSource('/api/events')
+    // EventSource can't send an Authorization header, so the token rides in the query string.
+    const source = new EventSource(`/api/events?token=${encodeURIComponent(adminToken)}`)
     const refetchSoon = throttledInvalidate(queryClient)
     const handlers: { [K in keyof LiveEvents]: (data: LiveEvents[K]) => void } = {
       job: (update) => applyJobUpdate(queryClient, update, refetchSoon),
@@ -136,21 +137,24 @@ function applyStatsTick(queryClient: QueryClient, tick: StatsTick, refetchSoon: 
   if (prev.dead_groups !== snapshot.dead_groups) refetchSoon(queryKeys.deadGroups)
 }
 
-function applyTeamUsage(queryClient: QueryClient, usage: TeamUsage[]) {
-  const byTeam = new Map(usage.map((u) => [u.team_id, u]))
-  queryClient.setQueryData<TeamsResponse>(queryKeys.teams, (prev) => {
+function applyTeamUsage(queryClient: QueryClient, updates: TeamUsageUpdate[]) {
+  const byTeam = new Map(updates.map((u) => [u.team_id, u]))
+  queryClient.setQueryData<{ teams: TeamSummary[] }>(queryKeys.teams, (prev) => {
     if (!prev) return prev
     const teams = prev.teams.map((team) => {
       const u = byTeam.get(team.id)
-      if (!u) return team
-      return {
-        ...team,
-        jobs_this_minute: u.jobs_this_minute,
-        rejected_this_minute: u.rejected_this_minute,
-        fair_share: u.fair_share,
-        workers_in_use: u.workers_in_use,
-      }
+      return u ? { ...team, usage: { queued: u.queued, running: u.running } } : team
     })
-    return { ...prev, teams }
+    return { teams }
   })
+  const rates: Record<number, TeamRate> = {}
+  for (const u of updates) {
+    rates[u.team_id] = {
+      team_id: u.team_id,
+      jobs_this_minute: u.jobs_this_minute,
+      rejected_this_minute: u.rejected_this_minute,
+      fair_share: u.fair_share,
+    }
+  }
+  queryClient.setQueryData(queryKeys.teamRates, rates)
 }

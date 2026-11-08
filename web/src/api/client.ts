@@ -10,10 +10,12 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(token: string, method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
   const res = await fetch(path, {
     method,
-    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   const data = await res.json().catch(() => null)
@@ -24,11 +26,21 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T
 }
 
-export const get = <T>(path: string) => request<T>('GET', path)
+function client(token: string) {
+  return {
+    get: <T>(path: string) => request<T>(token, 'GET', path),
+    post: <T>(path: string, body?: unknown) => request<T>(token, 'POST', path, body),
+    put: <T>(path: string, body: unknown) => request<T>(token, 'PUT', path, body),
+  }
+}
 
-export const post = <T>(path: string, body?: unknown) => request<T>('POST', path, body)
+// It's a demo with no logins: the job routes take a team's API key and the
+// admin routes one shared token, both from the environment.
+export const adminToken = import.meta.env.VITE_ADMIN_TOKEN ?? ''
 
-export const patch = <T>(path: string, body: unknown) => request<T>('PATCH', path, body)
+export const api = client(import.meta.env.VITE_API_KEY ?? '')
+
+export const admin = client(adminToken)
 
 export function describeError(err: unknown): string {
   if (err instanceof ApiError) {

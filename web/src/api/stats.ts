@@ -1,6 +1,6 @@
-import { get } from './client'
+import { admin } from './client'
 import type { Stats, WorkersResponse } from './types'
 
-export const getStats = () => get<Stats>('/api/stats')
+export const getStats = () => admin.get<Stats>('/api/stats')
 
-export const getWorkers = () => get<WorkersResponse>('/api/workers')
+export const getWorkers = () => admin.get<WorkersResponse>('/api/workers')

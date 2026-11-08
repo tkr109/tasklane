@@ -1,12 +1,15 @@
-import { get, patch, post } from './client'
-import type { ApiKey, CreatedKey, PlanName, Team, TeamsResponse } from './types'
+import { admin } from './client'
+import type { ApiKey, NewApiKey, Plan, PlanName, Team, TeamSummary } from './types'
 
-export const getTeams = () => get<TeamsResponse>('/api/teams')
+export const getPlans = () => admin.get<{ plans: Plan[] }>('/api/plans')
 
-export const switchPlan = (teamId: number, plan: PlanName) => patch<Team>(`/api/teams/${teamId}`, { plan })
+export const getTeams = () => admin.get<{ teams: TeamSummary[] }>('/api/teams')
 
-export const createKey = (teamId: number, name: string) =>
-  post<CreatedKey>(`/api/teams/${teamId}/keys`, { name })
+export const switchPlan = (teamId: number, plan: PlanName) => admin.put<Team>(`/api/teams/${teamId}/plan`, { plan })
+
+export const getKeys = (teamId: number) => admin.get<{ keys: ApiKey[] }>(`/api/teams/${teamId}/keys`)
+
+export const createKey = (teamId: number) => admin.post<NewApiKey>(`/api/teams/${teamId}/keys`)
 
 export const revokeKey = (teamId: number, keyId: number) =>
-  post<ApiKey>(`/api/teams/${teamId}/keys/${keyId}/revoke`)
+  admin.post<ApiKey>(`/api/teams/${teamId}/keys/${keyId}/revoke`)

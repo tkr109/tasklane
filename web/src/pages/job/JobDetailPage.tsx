@@ -42,7 +42,8 @@ export function JobDetailPage() {
     )
   }
 
-  const team = teamsData?.teams.find((t) => t.id === job.team_id)
+  const summary = teamsData?.teams.find((t) => t.id === job.team_id)
+  const team = summary && { name: summary.name, plan: summary.plan.name }
   const timeLimit = stats?.types.find((t) => t.type === job.type)?.timeout_seconds
 
   const copyId = () => {

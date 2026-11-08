@@ -1,4 +1,4 @@
-import { get, post } from './client'
+import { api } from './client'
 import type { Job, JobDetail, JobFilters, JobPage, JobSpec } from './types'
 
 export function listJobs(filters: JobFilters, cursor?: string) {
@@ -7,13 +7,13 @@ export function listJobs(filters: JobFilters, cursor?: string) {
   if (filters.type) params.set('type', filters.type)
   if (cursor) params.set('cursor', cursor)
   const qs = params.toString()
-  return get<JobPage>(qs ? `/api/jobs?${qs}` : '/api/jobs')
+  return api.get<JobPage>(qs ? `/api/jobs?${qs}` : '/api/jobs')
 }
 
-export const getJob = (id: number) => get<JobDetail>(`/api/jobs/${id}`)
+export const getJob = (id: number) => api.get<JobDetail>(`/api/jobs/${id}`)
 
-export const cancelJob = (id: number) => post<Job>(`/api/jobs/${id}/cancel`)
+export const cancelJob = (id: number) => api.post<Job>(`/api/jobs/${id}/cancel`)
 
-export const retryJob = (id: number) => post<Job>(`/api/jobs/${id}/retry`)
+export const retryJob = (id: number) => api.post<Job>(`/api/jobs/${id}/retry`)
 
-export const submitBatch = (jobs: JobSpec[]) => post<{ jobs: Job[] }>('/api/jobs/batch', { jobs })
+export const submitBatch = (jobs: JobSpec[]) => api.post<{ jobs: Job[] }>('/api/jobs/batch', { jobs })

@@ -1,9 +1,11 @@
-import type { Job, ScalerDecision, Stats, TeamUsage, Worker } from './types'
+import type { Job, ScalerDecision, Stats, TeamRate, TeamSummary, Worker } from './types'
 
 export type JobUpdate = Pick<
   Job,
   'id' | 'team_id' | 'type' | 'status' | 'progress' | 'attempts' | 'run_at' | 'locked_by' | 'last_error' | 'updated_at'
 >
+
+export type TeamUsageUpdate = TeamRate & TeamSummary['usage']
 
 export type StatsTick = Omit<Stats, 'samples'> & { sample: Stats['samples'][number] }
 
@@ -13,7 +15,7 @@ export interface LiveEvents {
   stats: StatsTick
   workers: Worker[]
   decision: ScalerDecision
-  team_usage: TeamUsage[]
+  team_usage: TeamUsageUpdate[]
 }
 
 export const LIVE_EVENT_NAMES: (keyof LiveEvents)[] = ['job', 'stats', 'workers', 'decision', 'team_usage']

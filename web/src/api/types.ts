@@ -130,6 +130,7 @@ export interface WorkersResponse {
 export type PlanName = 'free' | 'pro' | 'enterprise'
 
 export interface Plan {
+  id: number
   name: PlanName
   share_weight: number
   max_workers: number
@@ -137,39 +138,36 @@ export interface Plan {
   burst: number
 }
 
-export interface ApiKey {
+export interface Team {
   id: number
-  prefix: string
   name: string
+  plan: Plan
   created_at: string
-  last_used_at: string | null
-  revoked_at: string | null
 }
 
-export interface TeamUsage {
+export interface TeamSummary extends Team {
+  usage: { queued: number; running: number }
+}
+
+// The full key is only in the response that creates it.
+export interface ApiKey {
+  id: number
+  team_id: number
+  prefix: string
+  created_at: string
+  revoked_at?: string
+}
+
+export interface NewApiKey extends ApiKey {
+  key: string
+}
+
+// Per-minute usage and fair share arrive with rate limits; until then only the stream has them.
+export interface TeamRate {
   team_id: number
   jobs_this_minute: number
   rejected_this_minute: number
   fair_share: number
-  workers_in_use: number
-}
-
-export interface Team extends Omit<TeamUsage, 'team_id'> {
-  id: number
-  name: string
-  plan: PlanName
-  keys: ApiKey[]
-}
-
-export interface TeamsResponse {
-  teams: Team[]
-  plans: Plan[]
-}
-
-export interface CreatedKey {
-  key: ApiKey
-  // The full key. The API only keeps a hash, so this is the one chance to copy it.
-  secret: string
 }
 
 export interface DeadGroup {

@@ -1,7 +1,6 @@
 import type { JobUpdate, LiveEvents } from '../api/live'
 import type {
   ApiKey,
-  CreatedKey,
   DeadGroup,
   Job,
   JobDetail,
@@ -10,11 +9,12 @@ import type {
   JobPage,
   JobSpec,
   JobStatus,
+  NewApiKey,
   PlanName,
   ScalerDecision,
   Stats,
   Team,
-  TeamsResponse,
+  TeamSummary,
   Worker,
   WorkerState,
 } from '../api/types'
@@ -23,7 +23,8 @@ import { clamp, hex, pick, rand, randInt } from './random'
 import {
   BACKGROUND_ARRIVALS_PER_SECOND,
   DEAD_GROUPS,
-  FLOOD_TEAM,
+  ADMIN_TOKEN,
+  DASHBOARD_TEAM,
   JOB_TYPES,
   JOBS_PER_WORKER_SECOND,
   PLANS,
@@ -65,11 +66,17 @@ interface MockWorker {
   drainAt: number
 }
 
+// The mock keeps each key's secret so it can check Authorization headers.
+interface MockKey extends ApiKey {
+  secret: string
+}
+
 interface MockTeam {
   id: number
   seed: TeamSeed
   plan: PlanName
-  keys: ApiKey[]
+  createdAt: string
+  keys: MockKey[]
   usage: number
   demand: number
   rejected: number
@@ -91,6 +98,14 @@ const MINUTE = 60 * SECOND
 const HOUR = 60 * MINUTE
 
 const iso = (ms: number) => new Date(ms).toISOString()
+
+const bearer = (authorization: string | null) => authorization?.match(/^Bearer (.+)$/)?.[1].trim() ?? ''
+
+const newSecret = () => `tk_live_${hex(32)}`
+
+const displayPrefix = (secret: string) => secret.slice(0, 'tk_live_'.length + 6)
+
+const publicKey = ({ secret, ...key }: MockKey): ApiKey => key
 
 const backoffSeconds = (attempt: number) => Math.min(300, 2 ** attempt) * rand(0.8, 1.25)
 
@@ -133,14 +148,8 @@ export class World {
       id: i + 1,
       seed,
       plan: seed.plan,
-      keys: seed.keys.map((k) => ({
-        id: this.nextKeyId++,
-        prefix: k.prefix,
-        name: k.name,
-        created_at: iso(now - k.daysAgo * 24 * HOUR),
-        last_used_at: k.usedMinutesAgo === null ? null : iso(now - k.usedMinutesAgo * MINUTE),
-        revoked_at: null,
-      })),
+      createdAt: iso(now - seed.daysOld * 24 * HOUR),
+      keys: seed.keys.map((k) => this.newKey(i + 1, k.secret ?? newSecret(), now - k.daysAgo * 24 * HOUR)),
       usage: Math.min(seed.demandPerMinute, planByName(seed.plan).jobs_per_minute),
       demand: seed.demandPerMinute,
       rejected: 0,
@@ -177,11 +186,24 @@ export class World {
     this.listeners.forEach((listener) => listener(event, data))
   }
 
+  // Same answers as the API's auth middleware.
+  teamForKey(authorization: string | null): number {
+    const secret = bearer(authorization)
+    for (const team of this.teams) {
+      if (team.keys.some((k) => k.secret === secret && !k.revoked_at)) return team.id
+    }
+    throw new MockError(401, 'missing or invalid API key')
+  }
 
-  listJobs(filters: JobFilters, cursor: number | null, limit: number): JobPage {
+  checkAdmin(authorization: string | null) {
+    if (bearer(authorization) !== ADMIN_TOKEN) throw new MockError(401, 'missing or invalid admin token')
+  }
+
+  listJobs(teamId: number, filters: JobFilters, cursor: number | null, limit: number): JobPage {
     const list = [...this.jobs.values()]
       .filter(
         (job) =>
+          job.team_id === teamId &&
           (!filters.status || job.status === filters.status) &&
           (!filters.type || job.type === filters.type) &&
           (cursor === null || job.id < cursor),
@@ -193,13 +215,12 @@ export class World {
     return { jobs: list, next_cursor: next }
   }
 
-  getJob(id: number): JobDetail {
-    const job = this.jobs.get(id)
-    if (!job) throw new MockError(404, 'job not found')
+  getJob(teamId: number, id: number): JobDetail {
+    const job = this.ownJob(teamId, id)
     return { ...this.toJob(job), timeline: [...job.timeline] }
   }
 
-  submitBatch(specs: JobSpec[]): Job[] {
+  submitBatch(teamId: number, specs: JobSpec[]): Job[] {
     if (specs.length === 0 || specs.length > 500) throw new MockError(400, 'invalid request: a batch holds 1 to 500 jobs')
     specs.forEach((spec, i) => {
       if (!JOB_TYPES[spec.type]) {
@@ -210,7 +231,7 @@ export class World {
       throw new MockError(503, `more than ${formatNumber(QUEUE_CEILING)} jobs are queued, try again once it drains`, 30)
     }
 
-    const team = this.teamByName(FLOOD_TEAM)
+    const team = this.teamById(teamId)
     const plan = planByName(team.plan)
     const now = Date.now()
     if (team.tokens < specs.length) {
@@ -238,9 +259,8 @@ export class World {
     })
   }
 
-  cancelJob(id: number): Job {
-    const job = this.jobs.get(id)
-    if (!job) throw new MockError(404, 'job not found')
+  cancelJob(teamId: number, id: number): Job {
+    const job = this.ownJob(teamId, id)
     if (job.status !== 'queued' && job.status !== 'failed') {
       throw new MockError(409, `conflict: can't cancel a ${job.status} job`)
     }
@@ -251,9 +271,8 @@ export class World {
     return this.toJob(job)
   }
 
-  retryJob(id: number): Job {
-    const job = this.jobs.get(id)
-    if (!job) throw new MockError(404, 'job not found')
+  retryJob(teamId: number, id: number): Job {
+    const job = this.ownJob(teamId, id)
     if (job.status !== 'dead' && job.status !== 'failed' && job.status !== 'cancelled') {
       throw new MockError(409, `conflict: can't retry a ${job.status} job`)
     }
@@ -272,7 +291,6 @@ export class World {
     return this.toJob(job)
   }
 
-
   stats(): Stats {
     return { ...this.snapshot(), samples: [...this.samples] }
   }
@@ -281,9 +299,12 @@ export class World {
     return { workers: this.workerList(), decisions: this.decisions.slice(0, 50) }
   }
 
+  plansResponse() {
+    return { plans: PLANS }
+  }
 
-  teamsResponse(): TeamsResponse {
-    return { teams: this.teams.map((t) => this.toTeam(t)), plans: PLANS }
+  teamsResponse(): { teams: TeamSummary[] } {
+    return { teams: this.teams.map((t) => ({ ...this.toTeam(t), usage: this.queuedAndRunning(t) })) }
   }
 
   switchPlan(teamId: number, plan: PlanName): Team {
@@ -294,28 +315,23 @@ export class World {
     return this.toTeam(team)
   }
 
-  createKey(teamId: number, name: string): CreatedKey {
+  listKeys(teamId: number): { keys: ApiKey[] } {
+    return { keys: this.teamById(teamId).keys.map(publicKey) }
+  }
+
+  createKey(teamId: number): NewApiKey {
     const team = this.teamById(teamId)
-    const prefix = `tk_live_${hex(4)}`
-    const key: ApiKey = {
-      id: this.nextKeyId++,
-      prefix,
-      name: name || 'new key',
-      created_at: iso(Date.now()),
-      last_used_at: null,
-      revoked_at: null,
-    }
-    team.keys.unshift(key)
-    return { key, secret: prefix + hex(28) }
+    const key = this.newKey(team.id, newSecret(), Date.now())
+    team.keys.push(key)
+    return { ...publicKey(key), key: key.secret }
   }
 
   revokeKey(teamId: number, keyId: number): ApiKey {
     const key = this.teamById(teamId).keys.find((k) => k.id === keyId)
-    if (!key) throw new MockError(404, 'key not found')
+    if (!key) throw new MockError(404, 'API key not found')
     key.revoked_at ??= iso(Date.now())
-    return key
+    return publicKey(key)
   }
-
 
   deadGroupsResponse() {
     const groups = this.deadGroups.map(({ sampleIds, ...group }) => group)
@@ -325,7 +341,7 @@ export class World {
   deadGroupJobs(groupId: string, limit: number): Job[] {
     const group = this.deadGroupById(groupId)
     group.sampleIds ??= Array.from({ length: 5 }, () => {
-      const team = this.teamByName(pick(group.teams))
+      const team = this.teamByName(DASHBOARD_TEAM)
       const ageSeconds = (Date.now() - new Date(group.last_at).getTime()) / SECOND + rand(30, 900)
       return this.seedJob(team, 'dead', ageSeconds, { type: group.type, error: group.error }).id
     })
@@ -343,7 +359,6 @@ export class World {
     this.queued += group.count
     return { retried: group.count }
   }
-
 
   private tick() {
     const now = Date.now()
@@ -366,7 +381,10 @@ export class World {
       this.failedThisSecond = 0
       this.samples = [...this.samples, sample].slice(-SAMPLE_WINDOW)
       this.emit('stats', { ...this.snapshot(), sample })
-      this.emit('team_usage', this.teams.map((t) => ({ team_id: t.id, ...this.usageOf(t) })))
+      this.emit(
+        'team_usage',
+        this.teams.map((t) => ({ team_id: t.id, ...this.queuedAndRunning(t), ...this.rateOf(t) })),
+      )
     }
     if (this.ticks % ((SCALER.intervalSeconds * SECOND) / TICK_MS) === 0) this.scale(now)
     this.emit('workers', this.workerList())
@@ -443,8 +461,9 @@ export class World {
     for (const team of this.teams) {
       const plan = planByName(team.plan)
       team.tokens = Math.min(plan.burst, team.tokens + (plan.jobs_per_minute / 60) * dt)
-      if (team.seed.name === FLOOD_TEAM) {
-        team.demand = team.usage = this.submitted.reduce((sum, s) => sum + s.count, 0)
+      if (team.seed.name === DASHBOARD_TEAM) {
+        const flooded = this.submitted.reduce((sum, s) => sum + s.count, 0)
+        team.demand = team.usage = team.seed.demandPerMinute * rand(0.92, 1.08) + flooded
         team.rejected = this.rejected.reduce((sum, s) => sum + s.count, 0)
         continue
       }
@@ -491,7 +510,7 @@ export class World {
     }
 
     if (Math.random() < 0.32) {
-      const team = this.pickBackgroundTeam()
+      const team = this.teamByName(DASHBOARD_TEAM)
       this.createJob(team, pick(team.seed.types), now, { track: true })
     }
     this.pruneJobs()
@@ -542,7 +561,6 @@ export class World {
     this.emit('decision', decision)
   }
 
-
   private createJob(
     team: MockTeam,
     type: string,
@@ -564,7 +582,7 @@ export class World {
       updated_at: iso(createdAt),
       timeline: [],
     }
-    if (Math.random() < 0.55 && team.seed.name !== FLOOD_TEAM) job.idempotency_key = `${type.split('.')[0]}-${hex(8)}`
+    if (Math.random() < 0.55) job.idempotency_key = `${type.split('.')[0]}-${hex(8)}`
     this.addEvent(job, 'created', createdAt)
     if (opts.track) {
       this.jobs.set(job.id, job)
@@ -662,7 +680,6 @@ export class World {
     return { ...job, progress: Math.floor(job.progress) }
   }
 
-
   private seedWorkers(now: number) {
     const a = this.newWorker('running', now - 3 * HOUR - 1_200_000)
     const b = this.newWorker('running', now - 3 * HOUR - 1_100_000)
@@ -719,13 +736,13 @@ export class World {
         this.seedRetriedExample()
         seeded = true
       }
-      this.seedJob(this.pickBackgroundTeam(), status, age)
+      this.seedJob(this.teamByName(DASHBOARD_TEAM), status, age)
     }
   }
 
   // A job that failed once and then went through, to show a retry in the timeline.
   private seedRetriedExample() {
-    this.seedJob(this.teamByName('acme-billing'), 'succeeded', 95, {
+    this.seedJob(this.teamByName(DASHBOARD_TEAM), 'succeeded', 95, {
       type: 'webhook.deliver',
       priority: 7,
       failures: 1,
@@ -783,7 +800,6 @@ export class World {
     this.succeed(job, Math.min(t, now - SECOND))
     return job
   }
-
 
   private snapshot(): Omit<Stats, 'samples'> {
     const tail = this.samples.slice(-5)
@@ -850,22 +866,43 @@ export class World {
     })
   }
 
-  private usageOf(team: MockTeam) {
-    const plan = planByName(team.plan)
+  private shareOf(team: MockTeam) {
     const active = this.teams.filter((t) => t.demand > 1 || t.usage > 1)
-    const weights = active.reduce((sum, t) => sum + planByName(t.plan).share_weight, 0) || 1
-    const share = active.includes(team) ? plan.share_weight / weights : 0
-    const up = this.countWorkers('running')
+    if (!active.includes(team)) return 0
+    const weights = active.reduce((sum, t) => sum + planByName(t.plan).share_weight, 0)
+    return planByName(team.plan).share_weight / weights
+  }
+
+  private rateOf(team: MockTeam) {
     return {
       jobs_this_minute: Math.round(team.usage),
       rejected_this_minute: Math.round(team.rejected),
-      fair_share: share,
-      workers_in_use: Math.min(plan.max_workers, Math.max(share ? 1 : 0, Math.round(share * up))),
+      fair_share: this.shareOf(team),
     }
   }
 
+  // The dashboard's team owns the queue the charts show; the others keep a small backlog.
+  private queuedAndRunning(team: MockTeam) {
+    const share = this.shareOf(team)
+    const running = Math.min(planByName(team.plan).max_workers, Math.max(share ? 1 : 0, Math.round(share * this.running)))
+    if (team.seed.name !== DASHBOARD_TEAM) {
+      return { queued: Math.round((team.demand / 60) * rand(0.5, 2)), running }
+    }
+    return { queued: Math.round(this.queued), running }
+  }
+
   private toTeam(team: MockTeam): Team {
-    return { id: team.id, name: team.seed.name, plan: team.plan, keys: [...team.keys], ...this.usageOf(team) }
+    return { id: team.id, name: team.seed.name, plan: planByName(team.plan), created_at: team.createdAt }
+  }
+
+  private newKey(teamId: number, secret: string, createdAt: number): MockKey {
+    return { id: this.nextKeyId++, team_id: teamId, prefix: displayPrefix(secret), created_at: iso(createdAt), secret }
+  }
+
+  private ownJob(teamId: number, id: number) {
+    const job = this.jobs.get(id)
+    if (!job || job.team_id !== teamId) throw new MockError(404, 'job not found')
+    return job
   }
 
   private newWorker(state: WorkerState, startedAt: number, readyAt = startedAt): MockWorker {
@@ -892,16 +929,6 @@ export class World {
 
   private runningCount() {
     return [...this.jobs.values()].filter((j) => j.status === 'running').length
-  }
-
-  private pickBackgroundTeam(): MockTeam {
-    const pool = this.teams.filter((t) => t.seed.pickWeight > 0)
-    let roll = Math.random() * pool.reduce((sum, t) => sum + t.seed.pickWeight, 0)
-    for (const team of pool) {
-      roll -= team.seed.pickWeight
-      if (roll <= 0) return team
-    }
-    return pool[0]
   }
 
   private randomPriority() {

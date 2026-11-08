@@ -3,13 +3,18 @@ import { getDeadGroupJobs, getDeadGroups } from './dead'
 import { getJob } from './jobs'
 import { queryKeys } from './keys'
 import { getStats, getWorkers } from './stats'
-import { getTeams } from './teams'
+import { getKeys, getPlans, getTeams } from './teams'
 
 export const statsQuery = queryOptions({ queryKey: queryKeys.stats, queryFn: getStats })
 
 export const workersQuery = queryOptions({ queryKey: queryKeys.workers, queryFn: getWorkers })
 
+export const plansQuery = queryOptions({ queryKey: queryKeys.plans, queryFn: getPlans, staleTime: 60_000 })
+
 export const teamsQuery = queryOptions({ queryKey: queryKeys.teams, queryFn: getTeams })
+
+export const teamKeysQuery = (teamId: number) =>
+  queryOptions({ queryKey: queryKeys.teamKeys(teamId), queryFn: () => getKeys(teamId) })
 
 export const deadGroupsQuery = queryOptions({ queryKey: queryKeys.deadGroups, queryFn: getDeadGroups })
 

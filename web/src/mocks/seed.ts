@@ -18,9 +18,9 @@ export const BACKGROUND_ARRIVALS_PER_SECOND = 26
 export const WORKER_CONCURRENCY = 4
 
 export const PLANS: Plan[] = [
-  { name: 'free', share_weight: 1, max_workers: 2, jobs_per_minute: 100, burst: 200 },
-  { name: 'pro', share_weight: 3, max_workers: 6, jobs_per_minute: 1_000, burst: 2_000 },
-  { name: 'enterprise', share_weight: 10, max_workers: 10, jobs_per_minute: 10_000, burst: 20_000 },
+  { id: 1, name: 'free', share_weight: 1, max_workers: 2, jobs_per_minute: 100, burst: 200 },
+  { id: 2, name: 'pro', share_weight: 3, max_workers: 6, jobs_per_minute: 1_000, burst: 2_000 },
+  { id: 3, name: 'enterprise', share_weight: 10, max_workers: 10, jobs_per_minute: 10_000, burst: 20_000 },
 ]
 
 export const planByName = (name: PlanName) => PLANS.find((p) => p.name === name)!
@@ -56,72 +56,68 @@ export const JOB_TYPES: Record<string, JobTypeInfo> = {
 
 export const TYPE_NAMES = Object.keys(JOB_TYPES)
 
+// The Makefile and compose defaults, so the same .env works against mocks and the real API.
+export const DEV_API_KEY = 'tk_live_localdev'
+export const ADMIN_TOKEN = 'dev-admin-token'
+
+// The team that owns the dev key. Every tracked job, and the flood, belongs to it.
+export const DASHBOARD_TEAM = 'default'
+
 export interface KeySeed {
-  prefix: string
-  name: string
+  secret?: string
   daysAgo: number
-  usedMinutesAgo: number | null
 }
 
 export interface TeamSeed {
   name: string
   plan: PlanName
-  // How often background traffic comes from this team, relative to the others.
-  pickWeight: number
+  daysOld: number
   types: string[]
   demandPerMinute: number
   keys: KeySeed[]
 }
 
-export const FLOOD_TEAM = 'loadtest'
-
 export const TEAMS: TeamSeed[] = [
+  {
+    name: DASHBOARD_TEAM,
+    // The real seed puts this team on Pro; Enterprise's burst lets a 10k flood through.
+    plan: 'enterprise',
+    daysOld: 30,
+    types: ['webhook.deliver', 'email.send', 'image.resize'],
+    demandPerMinute: 120,
+    keys: [{ secret: DEV_API_KEY, daysAgo: 30 }],
+  },
   {
     name: 'acme-billing',
     plan: 'pro',
-    pickWeight: 3,
+    daysOld: 240,
     types: ['webhook.deliver', 'email.send'],
     demandPerMinute: 820,
-    keys: [
-      { prefix: 'tk_live_8f3a', name: 'production', daysAgo: 86, usedMinutesAgo: 0 },
-      { prefix: 'tk_live_2c91', name: 'staging', daysAgo: 41, usedMinutesAgo: 18 },
-      { prefix: 'tk_live_d07e', name: 'old laptop script', daysAgo: 210, usedMinutesAgo: 60 * 24 * 39 },
-    ],
+    keys: [{ daysAgo: 210 }, { daysAgo: 86 }, { daysAgo: 41 }],
   },
   {
     name: 'northwind',
     plan: 'enterprise',
-    pickWeight: 4,
+    daysOld: 160,
     types: ['webhook.deliver', 'email.send', 'image.resize'],
     demandPerMinute: 3_400,
-    keys: [
-      { prefix: 'tk_live_41bc', name: 'orders-service', daysAgo: 133, usedMinutesAgo: 0 },
-      { prefix: 'tk_live_9ad2', name: 'reports-cron', daysAgo: 60, usedMinutesAgo: 4 },
-    ],
+    keys: [{ daysAgo: 133 }, { daysAgo: 60 }],
   },
   {
     name: 'harbor-photos',
     plan: 'pro',
-    pickWeight: 2,
+    daysOld: 25,
     types: ['image.resize'],
     demandPerMinute: 430,
-    keys: [{ prefix: 'tk_live_c3e8', name: 'upload-api', daysAgo: 19, usedMinutesAgo: 0 }],
+    keys: [{ daysAgo: 19 }],
   },
   {
     name: 'side-project',
     plan: 'free',
-    pickWeight: 1,
+    daysOld: 9,
     types: ['email.send', 'webhook.deliver'],
     demandPerMinute: 38,
-    keys: [{ prefix: 'tk_live_77f1', name: 'default', daysAgo: 7, usedMinutesAgo: 25 }],
-  },
-  {
-    name: FLOOD_TEAM,
-    plan: 'enterprise',
-    pickWeight: 0,
-    types: ['image.resize'],
-    demandPerMinute: 0,
-    keys: [{ prefix: 'tk_live_0b5d', name: 'flood script', daysAgo: 2, usedMinutesAgo: null }],
+    keys: [{ daysAgo: 7 }],
   },
 ]
 
@@ -141,7 +137,7 @@ export const DEAD_GROUPS: DeadGroupSeed[] = [
     error: 'payment timeout: no answer within 30s',
     type: 'webhook.deliver',
     count: 4_200,
-    teams: ['acme-billing'],
+    teams: ['default', 'acme-billing'],
     firstHoursAgo: 2.3,
     lastMinutesAgo: 3,
     spiking: true,
@@ -150,7 +146,7 @@ export const DEAD_GROUPS: DeadGroupSeed[] = [
     error: 'smtp 550: mailbox unavailable',
     type: 'email.send',
     count: 1_312,
-    teams: ['northwind', 'acme-billing'],
+    teams: ['northwind', 'default'],
     firstHoursAgo: 26,
     lastMinutesAgo: 11,
   },
@@ -158,7 +154,7 @@ export const DEAD_GROUPS: DeadGroupSeed[] = [
     error: 'image exceeds 25 MB limit',
     type: 'image.resize',
     count: 846,
-    teams: ['harbor-photos'],
+    teams: ['default', 'harbor-photos'],
     firstHoursAgo: 120,
     lastMinutesAgo: 42,
   },
@@ -166,7 +162,7 @@ export const DEAD_GROUPS: DeadGroupSeed[] = [
     error: 'webhook 410 Gone: endpoint was removed by the receiver',
     type: 'webhook.deliver',
     count: 391,
-    teams: ['northwind', 'side-project'],
+    teams: ['northwind', 'default'],
     firstHoursAgo: 72,
     lastMinutesAgo: 126,
   },
@@ -174,7 +170,7 @@ export const DEAD_GROUPS: DeadGroupSeed[] = [
     error: 'decode error: unsupported format HEIC',
     type: 'image.resize',
     count: 172,
-    teams: ['harbor-photos'],
+    teams: ['default'],
     firstHoursAgo: 216,
     lastMinutesAgo: 330,
   },
