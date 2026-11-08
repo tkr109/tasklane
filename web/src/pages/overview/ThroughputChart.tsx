@@ -26,7 +26,7 @@ export function ThroughputChart({ samples }: { samples: Sample[] }) {
             tickLine={false}
             axisLine={{ stroke: 'var(--border)' }}
           />
-          <YAxis width={42} tickFormatter={formatShort} tickLine={false} axisLine={false} />
+          <YAxis width={42} allowDecimals={false} tickFormatter={formatShort} tickLine={false} axisLine={false} />
           <Bar dataKey="succeeded" stackId="done" fill="var(--ok)" radius={1.5} isAnimationActive={false} />
           <Bar dataKey="failed" stackId="done" fill="var(--failed)" radius={1} isAnimationActive={false} />
         </BarChart>

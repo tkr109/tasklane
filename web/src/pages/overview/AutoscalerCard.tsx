@@ -47,9 +47,9 @@ export function AutoscalerCard({ stats, decisions, now }: AutoscalerCardProps) {
     ...Array<WorkerState>(workers.draining).fill('draining'),
     ...Array<WorkerState>(workers.starting).fill('starting'),
   ]
-  // Without a scaler there is no max, so the row just fits the workers that are up.
-  const slots = scaler?.max ?? Math.max(pips.length, 1)
-  while (pips.length < slots) pips.push('unused')
+  // Without a scaler there is no max: the blocks keep their usual size and there are no empty slots.
+  const slots = scaler?.max ?? Math.max(pips.length, 10)
+  while (scaler && pips.length < slots) pips.push('unused')
   const state = scalerState(stats, scaler, now)
 
   return (

@@ -87,7 +87,14 @@ export function QueueChart({ samples, maxWorkers, floodAt }: QueueChartProps) {
             tickLine={false}
             axisLine={{ stroke: 'var(--border)' }}
           />
-          <YAxis yAxisId="queue" width={42} tickFormatter={formatShort} tickLine={false} axisLine={false} />
+          <YAxis
+            yAxisId="queue"
+            width={42}
+            allowDecimals={false}
+            tickFormatter={formatShort}
+            tickLine={false}
+            axisLine={false}
+          />
           <YAxis
             yAxisId="workers"
             orientation="right"
