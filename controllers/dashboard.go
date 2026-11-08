@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/tkr109/tasklane/services"
 )
@@ -10,10 +11,11 @@ import (
 // dead jobs pages.
 type Dashboard struct {
 	monitor *services.Monitor
+	dead    *services.DeadJobs
 }
 
-func NewDashboard(monitor *services.Monitor) *Dashboard {
-	return &Dashboard{monitor: monitor}
+func NewDashboard(monitor *services.Monitor, dead *services.DeadJobs) *Dashboard {
+	return &Dashboard{monitor: monitor, dead: dead}
 }
 
 func (h *Dashboard) Workers(w http.ResponseWriter, r *http.Request) {
@@ -24,4 +26,39 @@ func (h *Dashboard) Workers(w http.ResponseWriter, r *http.Request) {
 	}
 	// The scaler will log its decisions here; until it exists there are none.
 	writeJSON(w, http.StatusOK, map[string]any{"workers": workers, "decisions": []any{}})
+}
+
+func (h *Dashboard) DeadGroups(w http.ResponseWriter, r *http.Request) {
+	groups, total, err := h.dead.Groups(r.Context())
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"groups": groups, "total": total})
+}
+
+func (h *Dashboard) DeadGroupJobs(w http.ResponseWriter, r *http.Request) {
+	var limit int
+	if v := r.URL.Query().Get("limit"); v != "" {
+		var err error
+		if limit, err = strconv.Atoi(v); err != nil {
+			writeError(w, http.StatusBadRequest, "limit must be a number")
+			return
+		}
+	}
+	jobs, err := h.dead.Jobs(r.Context(), r.PathValue("id"), limit)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs})
+}
+
+func (h *Dashboard) RetryDeadGroup(w http.ResponseWriter, r *http.Request) {
+	n, err := h.dead.Retry(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"retried": n})
 }

@@ -119,7 +119,7 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 		controllers.NewJobs(queue, limits),
 		controllers.NewSchedules(services.NewSchedules(schedules, jobs.Defaults(), cfg.API.MaxSchedulesPerTeam)),
 		controllers.NewTeams(teams),
-		controllers.NewDashboard(services.NewMonitor(repositories.NewWorkers(pool))),
+		controllers.NewDashboard(services.NewMonitor(repositories.NewWorkers(pool)), services.NewDeadJobs(jobsRepo)),
 		controllers.NewEvents(events),
 		auth,
 		cfg.API.AdminToken,

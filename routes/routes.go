@@ -38,6 +38,9 @@ func New(jobs *controllers.Jobs, schedules *controllers.Schedules, teams *contro
 	mux.Handle("POST /api/teams/{id}/keys/{key}/revoke", admin(teams.RevokeKey))
 
 	mux.Handle("GET /api/workers", admin(dashboard.Workers))
+	mux.Handle("GET /api/dead-groups", admin(dashboard.DeadGroups))
+	mux.Handle("GET /api/dead-groups/{id}/jobs", admin(dashboard.DeadGroupJobs))
+	mux.Handle("POST /api/dead-groups/{id}/retry", admin(dashboard.RetryDeadGroup))
 	mux.Handle("GET /api/events", middleware.AdminStream(adminToken, http.HandlerFunc(events.Stream)))
 
 	return middleware.Logging(mux)
