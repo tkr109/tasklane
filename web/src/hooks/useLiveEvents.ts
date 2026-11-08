@@ -1,5 +1,6 @@
 import { useQueryClient, type InfiniteData, type QueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
+import { ApiError } from '../api/client'
 import { queryKeys } from '../api/keys'
 import { LIVE_EVENT_NAMES, type JobUpdate, type LiveEvents, type StatsTick } from '../api/live'
 import type { JobDetail, JobPage, Stats, TeamsResponse, TeamUsage, WorkersResponse } from '../api/types'
@@ -8,6 +9,17 @@ export type LiveStatus = 'connecting' | 'live' | 'offline'
 
 const SAMPLE_WINDOW = 150
 const DECISION_LIMIT = 50
+const POLL_MS = 5000
+
+let streamDown = false
+
+// The default refetchInterval: poll only while the stream is unavailable, and
+// leave alone endpoints the API doesn't have yet.
+export function pollWhileStreamDown(query: { state: { error: unknown } }) {
+  const { error } = query.state
+  if (!streamDown || (error instanceof ApiError && error.status === 404)) return false
+  return POLL_MS
+}
 
 // Keeps the query cache in step with the /api/events stream, so pages update without polling.
 export function useLiveEvents(): LiveStatus {
@@ -36,9 +48,21 @@ export function useLiveEvents(): LiveStatus {
         handle(JSON.parse((event as MessageEvent<string>).data))
       })
     }
-    source.onopen = () => setStatus('live')
+    source.onopen = () => {
+      streamDown = false
+      setStatus('live')
+    }
     // EventSource retries on its own; CLOSED means it gave up, e.g. the endpoint isn't there.
-    source.onerror = () => setStatus(source.readyState === EventSource.CLOSED ? 'offline' : 'connecting')
+    source.onerror = () => {
+      if (source.readyState !== EventSource.CLOSED) {
+        setStatus('connecting')
+        return
+      }
+      streamDown = true
+      setStatus('offline')
+      // Refetching makes every query re-read its interval and start polling.
+      void queryClient.invalidateQueries()
+    }
 
     return () => {
       source.close()
