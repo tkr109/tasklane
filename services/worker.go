@@ -27,13 +27,17 @@ type Worker struct {
 	cfg     config.Worker
 	repo    *repositories.Jobs
 	workers *repositories.Workers
+	buckets *repositories.RateBuckets
 	types   jobs.Registry
 
 	wake    chan struct{}
 	running sync.WaitGroup
+	// held is when each rate limited type is due its next token. Only the grab
+	// loop touches it.
+	held map[string]time.Time
 }
 
-func NewWorker(repo *repositories.Jobs, workers *repositories.Workers, types jobs.Registry, cfg config.Worker) *Worker {
+func NewWorker(repo *repositories.Jobs, workers *repositories.Workers, buckets *repositories.RateBuckets, types jobs.Registry, cfg config.Worker) *Worker {
 	host, _ := os.Hostname()
 	return &Worker{
 		id:      fmt.Sprintf("%s-%08x", host, rand.Uint32()),
@@ -41,8 +45,10 @@ func NewWorker(repo *repositories.Jobs, workers *repositories.Workers, types job
 		cfg:     cfg,
 		repo:    repo,
 		workers: workers,
+		buckets: buckets,
 		types:   types,
 		wake:    make(chan struct{}, 1),
+		held:    map[string]time.Time{},
 	}
 }
 
@@ -54,7 +60,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	if err := w.workers.Heartbeat(ctx, w.id, w.host); err != nil {
 		return fmt.Errorf("register worker: %w", err)
 	}
-	log.Info("worker started", "concurrency", w.cfg.Concurrency, "types", w.types.Names())
+	log.Info("worker started", "concurrency", w.cfg.Concurrency, "types", w.types.Names(), "limits", w.cfg.TypeLimits)
 
 	// The heartbeat outlives ctx so the worker still shows as alive while it drains.
 	beatCtx, stopBeat := context.WithCancel(context.WithoutCancel(ctx))
@@ -102,7 +108,6 @@ func (w *Worker) heartbeat(ctx context.Context) {
 
 func (w *Worker) loop(ctx, jobCtx context.Context) {
 	slots := make(chan struct{}, w.cfg.Concurrency)
-	types := w.types.Names()
 	for {
 		select {
 		case slots <- struct{}{}:
@@ -110,7 +115,7 @@ func (w *Worker) loop(ctx, jobCtx context.Context) {
 			return
 		}
 
-		job, err := grab(ctx, w.repo, w.id, types, w.cfg)
+		job, err := grab(ctx, w.repo, w.id, w.startable(), w.cfg)
 		if err != nil {
 			<-slots
 			if !errors.Is(err, repositories.ErrNotFound) && ctx.Err() == nil {
@@ -118,10 +123,14 @@ func (w *Worker) loop(ctx, jobCtx context.Context) {
 			}
 			select {
 			case <-w.wake:
-			case <-time.After(w.cfg.PollInterval):
+			case <-time.After(w.idleWait()):
 			case <-ctx.Done():
 				return
 			}
+			continue
+		}
+		if !w.takeToken(ctx, job) {
+			<-slots
 			continue
 		}
 
@@ -135,6 +144,61 @@ func (w *Worker) loop(ctx, jobCtx context.Context) {
 			w.execute(jobCtx, job)
 		})
 	}
+}
+
+// startable is the job types this worker may grab now: all of them but those
+// waiting for their rate limit to refill.
+func (w *Worker) startable() []string {
+	now := time.Now()
+	var types []string
+	for _, name := range w.types.Names() {
+		if now.Before(w.held[name]) {
+			continue
+		}
+		types = append(types, name)
+	}
+	return types
+}
+
+// idleWait is how long to wait for work when there was none to grab: the poll
+// interval, or less if a held type is due a token sooner.
+func (w *Worker) idleWait() time.Duration {
+	wait := w.cfg.PollInterval
+	for _, until := range w.held {
+		if d := time.Until(until); d > 0 {
+			wait = min(wait, d)
+		}
+	}
+	return wait
+}
+
+// takeToken spends a token of the job type's rate limit, if the type has one.
+// When there is none, the job goes back to the queue without using up its
+// attempt, and this worker leaves the type alone until the next token is due.
+func (w *Worker) takeToken(ctx context.Context, job models.Job) bool {
+	rate, limited := w.cfg.TypeLimits[job.Type]
+	if !limited {
+		return true
+	}
+	ok, left, err := w.buckets.Take(ctx, typeBucket(job.Type), rate, typeBurst(rate), 1)
+	if err != nil && ctx.Err() == nil {
+		slog.Error("take a rate limit token", "worker", w.id, "type", job.Type, "err", err)
+	}
+	if ok {
+		return true
+	}
+
+	wait := untilTokens(left, 1, rate)
+	w.held[job.Type] = time.Now().Add(wait)
+	// The hold must land even during shutdown, or the lease runs out and the
+	// reaper counts the attempt.
+	holdCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	reason := fmt.Sprintf("%s is at its limit of %.3g/s, back in %s", job.Type, rate, wait.Round(time.Millisecond))
+	if err := w.repo.Hold(holdCtx, job.ID, w.id, wait, reason); err != nil {
+		slog.Error("hold a rate limited job", "worker", w.id, "job", job.ID, "err", err)
+	}
+	return false
 }
 
 // listen turns Postgres notifications into wakeups for the grab loop, so new jobs

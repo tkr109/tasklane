@@ -34,7 +34,12 @@ func fastConfig() config.Worker {
 
 func startWorker(t *testing.T, pool *pgxpool.Pool, types jobs.Registry) {
 	t.Helper()
-	w := NewWorker(repositories.NewJobs(pool), repositories.NewWorkers(pool), types, fastConfig())
+	startWorkerWith(t, pool, types, fastConfig())
+}
+
+func startWorkerWith(t *testing.T, pool *pgxpool.Pool, types jobs.Registry, cfg config.Worker) {
+	t.Helper()
+	w := NewWorker(repositories.NewJobs(pool), repositories.NewWorkers(pool), repositories.NewRateBuckets(pool), types, cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- w.Run(ctx) }()

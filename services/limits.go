@@ -113,6 +113,16 @@ func untilTokens(have float64, want int, rate float64) time.Duration {
 	return time.Duration(missing / rate * float64(time.Second))
 }
 
+// typeBurst lets a rate limited job type start a tenth of a second's worth of
+// jobs at once, and always at least one.
+func typeBurst(rate float64) int {
+	return max(1, int(rate/10))
+}
+
 func teamBucket(teamID int64) string {
 	return "team:" + strconv.FormatInt(teamID, 10)
+}
+
+func typeBucket(jobType string) string {
+	return "type:" + jobType
 }

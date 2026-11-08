@@ -40,3 +40,12 @@ func TestAdmitRefusesMoreThanTheBurst(t *testing.T) {
 		t.Fatalf("a batch over the burst: err = %v, want ErrInvalid", err)
 	}
 }
+
+func TestTypeBurst(t *testing.T) {
+	tests := map[float64]int{0.5: 1, 1: 1, 10: 1, 25: 2, 200: 20}
+	for rate, want := range tests {
+		if got := typeBurst(rate); got != want {
+			t.Errorf("typeBurst(%v) = %d, want %d", rate, got, want)
+		}
+	}
+}
