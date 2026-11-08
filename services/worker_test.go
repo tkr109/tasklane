@@ -157,6 +157,36 @@ func TestSucceededJobKeepsItsResult(t *testing.T) {
 	}
 }
 
+func TestAStartingWorkerRunsFromItsFirstHeartbeat(t *testing.T) {
+	pool := testDB(t)
+	ctx := context.Background()
+	workers := repositories.NewWorkers(pool)
+	if err := workers.Starting(ctx, "tasklane-worker-1", "tasklane-worker-1"); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := workers.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].State != "starting" {
+		t.Fatalf("workers before the first heartbeat: %+v", listed)
+	}
+
+	cfg := fastConfig()
+	cfg.ID = "tasklane-worker-1"
+	startWorkerWith(t, pool, jobs.Registry{}, cfg)
+	waitUntil(t, 5*time.Second, "the worker to run", func() bool {
+		listed, err = workers.List(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(listed) == 1 && listed[0].State == "running"
+	})
+	if listed[0].ID != "tasklane-worker-1" {
+		t.Errorf("the worker came up as %q, want the name it was given", listed[0].ID)
+	}
+}
+
 func TestExpiredLeaseIsRequeued(t *testing.T) {
 	pool := testDB(t)
 	ctx := context.Background()

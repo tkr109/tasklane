@@ -26,13 +26,29 @@ func NewWorkers(db *pgxpool.Pool) *Workers {
 	return &Workers{db: db}
 }
 
+// Starting adds the row of a worker that is about to start, so it shows before
+// its first heartbeat. A worker that never comes up is removed as stale.
+func (r *Workers) Starting(ctx context.Context, id, host string) error {
+	_, err := r.db.Exec(ctx, `
+		with changed as (
+			insert into workers (id, host, state) values ($1, $2, 'starting')
+			on conflict (id) do nothing
+			returning `+workerColumns+`
+		)`+announceWorkers,
+		id, host)
+	return err
+}
+
 // Heartbeat records that the worker is alive and how many jobs it has finished,
-// creating its row on the first call.
+// creating its row on the first call. A starting worker counts as started from
+// its first heartbeat.
 func (r *Workers) Heartbeat(ctx context.Context, id, host string, jobsDone int64) error {
 	_, err := r.db.Exec(ctx, `
 		with changed as (
 			insert into workers (id, host, jobs_done) values ($1, $2, $3)
-			on conflict (id) do update set last_seen_at = now(), jobs_done = excluded.jobs_done
+			on conflict (id) do update set last_seen_at = now(), jobs_done = excluded.jobs_done,
+				state = case workers.state when 'starting' then 'running' else workers.state end,
+				started_at = case workers.state when 'starting' then now() else workers.started_at end
 			returning `+workerColumns+`
 		)`+announceWorkers,
 		id, host, jobsDone)

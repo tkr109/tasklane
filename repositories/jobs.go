@@ -460,10 +460,12 @@ func (r *Jobs) Overview(ctx context.Context) (models.Snapshot, error) {
 			(select count(*) from jobs where status = 'dead'),
 			(select count(*) from (select distinct type, error_key from jobs where status = 'dead') g),
 			(select count(*) from workers where state = 'running'),
+			(select count(*) from workers where state = 'starting'),
 			(select count(*) from workers where state = 'draining')
 		from jobs
 		where status in ('queued', 'failed')`).Scan(
 		&s.Counts.Queued, &s.Counts.Failed, &s.Runnable, &s.OldestWaitSeconds, &s.Counts.Running,
-		&s.Counts.SucceededToday, &s.Counts.Dead, &s.DeadGroups, &s.Workers.Running, &s.Workers.Draining)
+		&s.Counts.SucceededToday, &s.Counts.Dead, &s.DeadGroups, &s.Workers.Running, &s.Workers.Starting,
+		&s.Workers.Draining)
 	return s, err
 }
