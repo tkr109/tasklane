@@ -2,7 +2,14 @@ import { useQueryClient, type InfiniteData, type QueryClient } from '@tanstack/r
 import { useEffect, useState } from 'react'
 import { adminToken, ApiError } from '../api/client'
 import { queryKeys } from '../api/keys'
-import { LIVE_EVENT_NAMES, type JobUpdate, type LiveEvents, type StatsTick, type TeamUsageUpdate } from '../api/live'
+import {
+  LIVE_EVENT_NAMES,
+  type JobUpdate,
+  type LiveEvents,
+  type StatsTick,
+  type TeamUsageUpdate,
+  type WorkerUpdate,
+} from '../api/live'
 import type { JobDetail, JobPage, Stats, TeamRate, TeamSummary, WorkersResponse } from '../api/types'
 
 export type LiveStatus = 'connecting' | 'live' | 'offline'
@@ -33,8 +40,7 @@ export function useLiveEvents(): LiveStatus {
     const handlers: { [K in keyof LiveEvents]: (data: LiveEvents[K]) => void } = {
       job: (update) => applyJobUpdate(queryClient, update, refetchSoon),
       stats: (tick) => applyStatsTick(queryClient, tick, refetchSoon),
-      workers: (workers) =>
-        queryClient.setQueryData<WorkersResponse>(queryKeys.workers, (prev) => prev && { ...prev, workers }),
+      worker: (update) => applyWorkerUpdate(queryClient, update),
       decision: (decision) =>
         queryClient.setQueryData<WorkersResponse>(
           queryKeys.workers,
@@ -124,6 +130,38 @@ function applyJobUpdate(queryClient: QueryClient, update: JobUpdate, refetchSoon
   }
 
   if (update.status === 'dead') refetchSoon(queryKeys.deadGroups)
+  applyRunningJob(queryClient, update, refetchSoon)
+}
+
+// Workers list their running jobs only on a fetch, so job events keep them current in between.
+function applyRunningJob(queryClient: QueryClient, update: JobUpdate, refetchSoon: RefetchSoon) {
+  const data = queryClient.getQueryData<WorkersResponse>(queryKeys.workers)
+  if (!data) return
+  const owner = update.status === 'running' ? update.locked_by : null
+  const listed = data.workers.some((w) => w.running_jobs.some((job) => job.id === update.id))
+  if (!owner && !listed) return
+  if (owner && !data.workers.some((w) => w.id === owner)) {
+    refetchSoon(queryKeys.workers)
+    return
+  }
+
+  const running = { id: update.id, type: update.type, progress: update.progress }
+  const workers = data.workers.map((worker) => {
+    const others = worker.running_jobs.filter((job) => job.id !== update.id)
+    if (worker.id === owner) return { ...worker, running_jobs: [...others, running] }
+    return others.length === worker.running_jobs.length ? worker : { ...worker, running_jobs: others }
+  })
+  queryClient.setQueryData<WorkersResponse>(queryKeys.workers, { ...data, workers })
+}
+
+function applyWorkerUpdate(queryClient: QueryClient, { state, ...update }: WorkerUpdate) {
+  queryClient.setQueryData<WorkersResponse>(queryKeys.workers, (prev) => {
+    if (!prev) return prev
+    const rest = prev.workers.filter((w) => w.id !== update.id)
+    if (state === 'stopped') return { ...prev, workers: rest }
+    const known = prev.workers.find((w) => w.id === update.id)
+    return { ...prev, workers: [...rest, { running_jobs: [], ...known, ...update, state }] }
+  })
 }
 
 function applyStatsTick(queryClient: QueryClient, tick: StatsTick, refetchSoon: RefetchSoon) {

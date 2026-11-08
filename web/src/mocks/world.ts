@@ -1,4 +1,4 @@
-import type { JobUpdate, LiveEvents } from '../api/live'
+import type { JobUpdate, LiveEvents, WorkerUpdate } from '../api/live'
 import type {
   ApiKey,
   DeadGroup,
@@ -387,17 +387,18 @@ export class World {
       )
     }
     if (this.ticks % ((SCALER.intervalSeconds * SECOND) / TICK_MS) === 0) this.scale(now)
-    this.emit('workers', this.workerList())
   }
 
   private stepWorkers(now: number) {
     for (const w of this.workers) {
       if (w.state === 'starting' && now >= w.readyAt) {
         Object.assign(w, { state: 'running', startedAt: now, lastSeen: now })
+        this.emitWorker(w)
       }
       if (w.state !== 'starting' && (now - w.lastSeen) / SECOND >= w.heartbeatEvery) {
         w.lastSeen = now
         w.heartbeatEvery = rand(2.6, 3.3)
+        this.emitWorker(w)
       }
     }
 
@@ -417,6 +418,9 @@ export class World {
       })
       this.addEvent(job, 'lease_expired', now, `${worker} stopped renewing the lease, job is queued`)
       this.emitJob(job)
+    }
+    for (const w of this.workers) {
+      if (gone.has(w.id)) this.emitWorker(w, 'stopped')
     }
     this.workers = this.workers.filter((w) => !gone.has(w.id))
   }
@@ -526,7 +530,9 @@ export class World {
 
     if (want > current) {
       for (let i = 0; i < want - current; i++) {
-        this.workers.push(this.newWorker('starting', now, now + 1200 + i * 550 + rand(0, 300)))
+        const worker = this.newWorker('starting', now, now + 1200 + i * 550 + rand(0, 300))
+        this.workers.push(worker)
+        this.emitWorker(worker)
       }
       const heldNote = held > 20 ? `, ${formatNumber(held)} held by email limit not counted` : ''
       this.decide('up', current, want, `${formatNumber(runnable)} runnable, oldest wait ${Math.round(this.oldestWait)}s${heldNote}`)
@@ -540,7 +546,10 @@ export class World {
         now - this.lastStepDown >= SCALER.stepDownSeconds * SECOND
       ) {
         const victim = active.filter((w) => w.state === 'running').sort((a, b) => b.startedAt - a.startedAt)[0] ?? active.at(-1)
-        if (victim) Object.assign(victim, { state: 'draining', drainAt: now + 2600 })
+        if (victim) {
+          Object.assign(victim, { state: 'draining', drainAt: now + 2600 })
+          this.emitWorker(victim)
+        }
         this.lastStepDown = now
         const below = Math.round((now - this.belowTargetSince) / SECOND)
         this.decide(
@@ -654,6 +663,11 @@ export class World {
       updated_at: job.updated_at,
     }
     this.emit('job', update)
+  }
+
+  private emitWorker(w: MockWorker, state: WorkerUpdate['state'] = w.state) {
+    const { running_jobs, ...worker } = this.toWorker(w)
+    this.emit('worker', { ...worker, state })
   }
 
   private nextRunnable(now: number): MockJob | undefined {
