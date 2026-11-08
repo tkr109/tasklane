@@ -525,7 +525,7 @@ export class World {
 
     const heldTarget = this.queued > 400 ? 120 + rand(0, 60) : 30 + rand(0, 30)
     this.rateHeld = Math.min(this.rateHeld + (heldTarget - this.rateHeld) * 0.2, this.queued)
-    const slots = up * WORKER_CONCURRENCY * 2
+    const slots = up * WORKER_CONCURRENCY
     this.running = Math.round(
       Math.min(slots, this.queued > slots ? slots : (processed / dt) * 0.16 + rand(1, 4)),
     )

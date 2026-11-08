@@ -1,11 +1,12 @@
 import type { Plan, PlanName } from '../api/types'
 import { hex, pick, randInt } from './random'
 
+// Matches the real defaults, with compose's one job per worker.
 export const SCALER = {
   min: 2,
   max: 10,
-  jobsPerWorker: 600,
-  intervalSeconds: 2,
+  jobsPerWorker: 500,
+  intervalSeconds: 1,
   cooldownSeconds: 20,
   stepDownSeconds: 3,
 }
@@ -15,7 +16,7 @@ export const QUEUE_CEILING = 100_000
 // Rough throughput numbers that make the charts move like a real system.
 export const JOBS_PER_WORKER_SECOND = 48
 export const BACKGROUND_ARRIVALS_PER_SECOND = 26
-export const WORKER_CONCURRENCY = 4
+export const WORKER_CONCURRENCY = 1
 
 export const PLANS: Plan[] = [
   { id: 1, name: 'free', share_weight: 1, max_workers: 2, jobs_per_minute: 100, burst: 200 },
