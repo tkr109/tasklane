@@ -50,8 +50,9 @@ func (w *Worker) ID() string {
 	return w.id
 }
 
-// Run pulls and runs jobs until ctx is cancelled, then waits for the jobs it
-// already holds.
+// Run pulls and runs jobs until ctx is cancelled. It then stops grabbing and gives
+// running jobs the shutdown grace period to finish. Whatever is still running
+// after that is abandoned, and the reaper requeues it once the lease runs out.
 func (w *Worker) Run(ctx context.Context) error {
 	log := slog.With("worker", w.id)
 	if err := w.workers.Heartbeat(ctx, w.id, w.host); err != nil {
@@ -66,10 +67,17 @@ func (w *Worker) Run(ctx context.Context) error {
 	go w.reap(ctx)
 	go w.listen(ctx)
 
-	w.loop(ctx, context.WithoutCancel(ctx))
+	// Jobs get their own context so SIGTERM stops new grabs without killing them.
+	jobCtx, cancelJobs := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelJobs()
+	w.loop(ctx, jobCtx)
 
-	log.Info("worker draining")
-	w.running.Wait()
+	log.Info("worker draining", "grace", w.cfg.ShutdownGrace)
+	if !waitFor(&w.running, w.cfg.ShutdownGrace) {
+		log.Warn("grace period over, leaving unfinished jobs to the reaper")
+		cancelJobs()
+		waitFor(&w.running, 5*time.Second)
+	}
 	stopBeat()
 
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -180,6 +188,9 @@ func (w *Worker) execute(jobCtx context.Context, job models.Job) {
 		log.Info("job succeeded", "took", time.Since(start))
 	case errors.Is(cause, errTimedOut):
 		err = w.fail(writeCtx, log, job, fmt.Errorf("timed out after %s", jt.Timeout))
+	case jobCtx.Err() != nil:
+		log.Warn("interrupted by shutdown, the lease will hand it back")
+		return
 	default:
 		err = w.fail(writeCtx, log, job, err)
 	}
@@ -237,4 +248,19 @@ func runHandler(ctx context.Context, h jobs.Handler, job models.Job, progress jo
 		}
 	}()
 	return h(ctx, job.Payload, progress)
+}
+
+// waitFor reports whether wg finished within d.
+func waitFor(wg *sync.WaitGroup, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
