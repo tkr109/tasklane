@@ -1,0 +1,101 @@
+:root {
+  --bg: #f5f6f8;
+  --side: #fbfbfc;
+  --panel: #fff;
+  --panel-2: #f8f9fb;
+  --border: #e4e7ec;
+  --border-soft: #eef0f3;
+  --hover: #f3f5f8;
+  --track: #eaedf1;
+  --text: #151922;
+  --muted: #5d6676;
+  --faint: #8b93a1;
+  --accent: #4c5fd5;
+  --accent-soft: #eceffd;
+  --accent-text: #3446b8;
+  --on-accent: #fff;
+  --queued: #7783a0;
+  --running: #2f80ed;
+  --ok: #169b6b;
+  --failed: #d9821e;
+  --dead: #d64b4b;
+  --cancelled: #9aa1ad;
+  --workers: #0e9488;
+  --grid: #eceef2;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.03);
+  --code-key: #3446b8;
+  --code-str: #0f7a55;
+  --code-num: #b45b0a;
+  --code-lit: #9a3fb8;
+
+  --font-sans: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0e1117;
+    --side: #11151c;
+    --panel: #151a22;
+    --panel-2: #181e27;
+    --border: #252c37;
+    --border-soft: #1e242e;
+    --hover: #1c222c;
+    --track: #242b36;
+    --text: #e7eaf0;
+    --muted: #9aa3b2;
+    --faint: #6b7483;
+    --accent: #8394f2;
+    --accent-soft: #1f2645;
+    --accent-text: #b1bcff;
+    --on-accent: #0e1117;
+    --queued: #97a3be;
+    --running: #559ffc;
+    --ok: #33c28a;
+    --failed: #eca34f;
+    --dead: #f06c6c;
+    --cancelled: #7d8593;
+    --workers: #34c3b3;
+    --grid: #1f252f;
+    --shadow: none;
+    --code-key: #a9b5ff;
+    --code-str: #5fd0a0;
+    --code-num: #f0b36b;
+    --code-lit: #d59cf0;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #0e1117;
+  --side: #11151c;
+  --panel: #151a22;
+  --panel-2: #181e27;
+  --border: #252c37;
+  --border-soft: #1e242e;
+  --hover: #1c222c;
+  --track: #242b36;
+  --text: #e7eaf0;
+  --muted: #9aa3b2;
+  --faint: #6b7483;
+  --accent: #8394f2;
+  --accent-soft: #1f2645;
+  --accent-text: #b1bcff;
+  --on-accent: #0e1117;
+  --queued: #97a3be;
+  --running: #559ffc;
+  --ok: #33c28a;
+  --failed: #eca34f;
+  --dead: #f06c6c;
+  --cancelled: #7d8593;
+  --workers: #34c3b3;
+  --grid: #1f252f;
+  --shadow: none;
+  --code-key: #a9b5ff;
+  --code-str: #5fd0a0;
+  --code-num: #f0b36b;
+  --code-lit: #d59cf0;
+  color-scheme: dark;
+}
