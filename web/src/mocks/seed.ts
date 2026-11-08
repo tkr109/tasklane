@@ -10,7 +10,7 @@ export const SCALER = {
   stepDownSeconds: 3,
 }
 
-export const QUEUE_CEILING = 50_000
+export const QUEUE_CEILING = 100_000
 
 // Rough throughput numbers that make the charts move like a real system.
 export const JOBS_PER_WORKER_SECOND = 48

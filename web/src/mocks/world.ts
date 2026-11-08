@@ -18,7 +18,7 @@ import type {
   Worker,
   WorkerState,
 } from '../api/types'
-import { capitalize, formatNumber } from '../lib/format'
+import { formatNumber } from '../lib/format'
 import { clamp, hex, pick, rand, randInt } from './random'
 import {
   BACKGROUND_ARRIVALS_PER_SECOND,
@@ -245,21 +245,23 @@ export class World {
         throw new MockError(400, `job ${i}: invalid request: unknown job type "${spec.type}", expected one of [${TYPE_NAMES.join(' ')}]`)
       }
     })
-    if (this.queued > QUEUE_CEILING) {
-      throw new MockError(503, `more than ${formatNumber(QUEUE_CEILING)} jobs are queued, try again once it drains`, 30)
-    }
-
     const team = this.teamById(teamId)
     const plan = planByName(team.plan)
+    if (specs.length > plan.burst) {
+      throw new MockError(
+        400,
+        `invalid request: ${specs.length} jobs at once is more than the ${plan.name} plan's burst of ${plan.burst}`,
+      )
+    }
+    if (this.queued - this.rateHeld >= QUEUE_CEILING) {
+      throw new MockError(503, 'too many jobs are waiting to run', 5)
+    }
+
     const now = Date.now()
     if (team.tokens < specs.length) {
       this.rejected.push({ at: now, count: specs.length })
       const wait = Math.ceil((specs.length - team.tokens) / (plan.jobs_per_minute / 60))
-      throw new MockError(
-        429,
-        `rate limit reached: ${team.seed.name} is on ${capitalize(team.plan)} (${formatNumber(plan.jobs_per_minute)} jobs per minute, burst ${formatNumber(plan.burst)})`,
-        wait,
-      )
+      throw new MockError(429, `rate limit reached: the ${plan.name} plan allows ${plan.jobs_per_minute} jobs a minute`, wait)
     }
     team.tokens -= specs.length
     this.submitted.push({ at: now, count: specs.length })

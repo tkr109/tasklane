@@ -1,12 +1,26 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
-import { describeError } from '../api/client'
+import { ApiError, describeError } from '../api/client'
 import { submitBatch } from '../api/jobs'
 import { queryKeys } from '../api/keys'
 import { FloodContext } from '../hooks/useFlood'
 import { useToast } from '../hooks/useToast'
 import { FLOOD_BATCH, FLOOD_JOB, FLOOD_SIZE } from '../lib/flood'
 import { formatNumber } from '../lib/format'
+
+function stoppedMessage(err: unknown, sent: number): string {
+  const after = sent > 0 ? `Stopped after ${formatNumber(sent)} jobs. ` : ''
+  if (!(err instanceof ApiError)) return after + describeError(err)
+  const wait = err.retryAfter ? ` in ${err.retryAfter}s` : ' shortly'
+  if (err.status === 429) {
+    const limit = err.message.replace(/^rate limit reached: /, '')
+    return `${after}The team hit its submit limit: ${limit}. There is room for more${wait}, or switch it to Enterprise on the Teams page.`
+  }
+  if (err.status === 503) {
+    return `${after}The queue is full, so the API is turning submits away until it drains. Try again${wait}.`
+  }
+  return after + describeError(err)
+}
 
 export function FloodProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
@@ -30,7 +44,7 @@ export function FloodProvider({ children }: { children: ReactNode }) {
         setRemaining(FLOOD_SIZE - sent)
       }
     } catch (err) {
-      toast(sent > 0 ? `Stopped after ${formatNumber(sent)} jobs. ${describeError(err)}` : describeError(err))
+      toast(stoppedMessage(err, sent))
     } finally {
       running.current = false
       setRemaining(null)
