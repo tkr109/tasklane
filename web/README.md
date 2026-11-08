@@ -1,7 +1,7 @@
 # Tasklane dashboard
 
 The web dashboard for Tasklane: queue and worker counts, the autoscaler at work, jobs with
-live progress, teams and their plans, and dead jobs grouped by error. See `docs/design.md`
+live progress, schedules, teams and their plans, and dead jobs grouped by error. See `docs/design.md`
 for the bigger picture.
 
 Built with Vite, React, TypeScript, React Router, TanStack Query and Recharts. Styles are
@@ -36,29 +36,23 @@ answers every `/api` request in the browser. A small simulation in `src/mocks/` 
 queue, workers that scale between 2 and 10, teams with rate limits, and a few hundred job
 records, so every page works and "Flood 10k jobs" shows the autoscaler react.
 
-The mocks return the same shapes and errors the real API does or will, auth included, so
-pages switch over as endpoints land. Without the mock flag, a page whose endpoint doesn't
-exist yet says so instead of breaking.
+The mocks return the same shapes and errors the real API does, auth included, and send the
+same events on the stream, so mock mode is a fair stand-in for the real thing.
 
 In the mock data the `default` team is on Enterprise rather than Pro, so a 10k flood fits
-in its burst. Switch it to Pro on the Teams page to watch the flood hit a 429.
+in its burst. Switch it to Pro on the Teams page to watch the flood hit a 429. Against the
+real API, switch `default` to Enterprise first.
 
-## API the dashboard expects
+## API the dashboard uses
 
-Already in the backend: the job routes (`/api/jobs`, `/api/jobs/batch`, `/api/jobs/{id}`,
-cancel and retry) and the admin routes for plans, teams and keys.
+The job and schedule routes run as the team of `VITE_API_KEY`. The admin routes take
+`VITE_ADMIN_TOKEN`: plans, teams and keys, `GET /api/stats`, `GET /api/workers`, the dead
+job groups, and the event stream at `GET /api/events`. `EventSource` can't send an
+`Authorization` header, so the stream takes the admin token as a `token` query parameter.
 
-Still to build, with the shapes in `src/api/types.ts` and `src/api/live.ts`:
+The stream's events are typed in `src/api/live.ts`. `job`, `worker`, `stats` and
+`team_usage` patch the query cache in place, `decision` adds to the scaler log and `reset`
+refetches everything. While the stream is down, every query polls every five seconds.
 
-| Endpoint | Used by |
-| --- | --- |
-| `GET /api/stats` | Overview, sidebar counts, workers stats row |
-| `GET /api/workers` | Workers page, autoscaler decisions |
-| `GET /api/dead-groups`, `GET /api/dead-groups/{id}/jobs`, `POST /api/dead-groups/{id}/retry` | Dead jobs |
-| `GET /api/events?token=` (SSE) | Live updates: `job`, `stats`, `workers`, `decision`, `team_usage` |
-
-These are admin routes. `EventSource` can't send an `Authorization` header, so the stream
-takes the admin token as a `token` query parameter. Per-minute usage and fair share on the
-Teams page only arrive through `team_usage` events for now.
-
-Until `/api/events` exists, the dashboard polls every five seconds instead.
+Stats carry a `scaler` field only while a scaler runs; without one the overview and workers
+pages say so and keep working.

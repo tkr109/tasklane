@@ -21,7 +21,7 @@ export interface Job {
   updated_at: string
   started_at?: string
   finished_at?: string
-  // Not returned by the API yet; job handlers will start storing results.
+  // Only on a succeeded job whose handler returned something.
   result?: unknown
 }
 
