@@ -51,7 +51,7 @@ func (q *Queue) Submit(ctx context.Context, teamID int64, spec JobSpec, idempote
 	if len(idempotencyKey) > maxKeyLength {
 		return job, false, fmt.Errorf("%w: idempotency key longer than %d characters", ErrInvalid, maxKeyLength)
 	}
-	nj, err := q.newJob(teamID, spec)
+	nj, err := newJob(q.types, teamID, spec)
 	if err != nil {
 		return job, false, err
 	}
@@ -65,7 +65,7 @@ func (q *Queue) SubmitBatch(ctx context.Context, teamID int64, specs []JobSpec) 
 	}
 	batch := make([]models.NewJob, len(specs))
 	for i, spec := range specs {
-		nj, err := q.newJob(teamID, spec)
+		nj, err := newJob(q.types, teamID, spec)
 		if err != nil {
 			return nil, fmt.Errorf("job %d: %w", i, err)
 		}
@@ -74,7 +74,8 @@ func (q *Queue) SubmitBatch(ctx context.Context, teamID int64, specs []JobSpec) 
 	return q.repo.CreateBatch(ctx, batch)
 }
 
-func (q *Queue) newJob(teamID int64, spec JobSpec) (models.NewJob, error) {
+// newJob checks a spec against the submit rules and fills in its defaults.
+func newJob(types jobs.Registry, teamID int64, spec JobSpec) (models.NewJob, error) {
 	nj := models.NewJob{
 		TeamID:      teamID,
 		Type:        spec.Type,
@@ -82,8 +83,8 @@ func (q *Queue) newJob(teamID int64, spec JobSpec) (models.NewJob, error) {
 		Priority:    defaultPriority,
 		MaxAttempts: defaultMaxAttempts,
 	}
-	if _, ok := q.types[spec.Type]; !ok {
-		return nj, fmt.Errorf("%w: unknown job type %q, expected one of %v", ErrInvalid, spec.Type, q.types.Names())
+	if _, ok := types[spec.Type]; !ok {
+		return nj, fmt.Errorf("%w: unknown job type %q, expected one of %v", ErrInvalid, spec.Type, types.Names())
 	}
 	if spec.Priority != nil {
 		if *spec.Priority < 0 || *spec.Priority > 9 {
