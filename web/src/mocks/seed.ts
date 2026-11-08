@@ -33,24 +33,44 @@ export interface JobTypeInfo {
   errors: string[]
 }
 
+// The job types and time limits the API registers, with the default outgoing limits.
 export const JOB_TYPES: Record<string, JobTypeInfo> = {
-  'webhook.deliver': {
-    timeoutSeconds: 30,
-    outgoingPerSecond: 200,
-    speed: [28, 60],
-    errors: ['payment timeout: no answer within 30s', 'upstream returned 503 Service Unavailable', 'connection reset by peer'],
-  },
-  'image.resize': {
-    timeoutSeconds: 120,
-    outgoingPerSecond: null,
-    speed: [7, 16],
-    errors: ['decode error: unsupported format HEIC', 'image exceeds 25 MB limit'],
-  },
   'email.send': {
-    timeoutSeconds: 20,
+    timeoutSeconds: 30,
     outgoingPerSecond: 10,
     speed: [22, 45],
-    errors: ['smtp 421: service not available, try again later', 'smtp 550: mailbox unavailable'],
+    errors: [
+      'email.send: 421 4.3.2 Service not available, closing transmission channel',
+      'email.send: 550 5.1.1 mailbox unavailable',
+    ],
+  },
+  flaky: {
+    timeoutSeconds: 30,
+    outgoingPerSecond: null,
+    speed: [30, 60],
+    errors: ['flaky: failed on purpose'],
+  },
+  'image.resize': {
+    timeoutSeconds: 60,
+    outgoingPerSecond: null,
+    speed: [7, 16],
+    errors: ['image.resize: fetch source: got 404 Not Found', 'image.resize: source is over 20 MB'],
+  },
+  sleep: {
+    timeoutSeconds: 300,
+    outgoingPerSecond: null,
+    speed: [4, 9],
+    errors: [],
+  },
+  webhook: {
+    timeoutSeconds: 15,
+    outgoingPerSecond: 200,
+    speed: [28, 60],
+    errors: [
+      'webhook: Post "https://hooks.example.com/events": context deadline exceeded',
+      'webhook: got 503 Service Unavailable',
+      'webhook: got 502 Bad Gateway: upstream connect error',
+    ],
   },
 }
 
@@ -83,7 +103,7 @@ export const TEAMS: TeamSeed[] = [
     // The real seed puts this team on Pro; Enterprise's burst lets a 10k flood through.
     plan: 'enterprise',
     daysOld: 30,
-    types: ['webhook.deliver', 'email.send', 'image.resize'],
+    types: ['webhook', 'email.send', 'image.resize'],
     demandPerMinute: 120,
     keys: [{ secret: DEV_API_KEY, daysAgo: 30 }],
   },
@@ -91,7 +111,7 @@ export const TEAMS: TeamSeed[] = [
     name: 'acme-billing',
     plan: 'pro',
     daysOld: 240,
-    types: ['webhook.deliver', 'email.send'],
+    types: ['webhook', 'email.send'],
     demandPerMinute: 820,
     keys: [{ daysAgo: 210 }, { daysAgo: 86 }, { daysAgo: 41 }],
   },
@@ -99,7 +119,7 @@ export const TEAMS: TeamSeed[] = [
     name: 'northwind',
     plan: 'enterprise',
     daysOld: 160,
-    types: ['webhook.deliver', 'email.send', 'image.resize'],
+    types: ['webhook', 'email.send', 'image.resize'],
     demandPerMinute: 3_400,
     keys: [{ daysAgo: 133 }, { daysAgo: 60 }],
   },
@@ -115,7 +135,7 @@ export const TEAMS: TeamSeed[] = [
     name: 'side-project',
     plan: 'free',
     daysOld: 9,
-    types: ['email.send', 'webhook.deliver'],
+    types: ['email.send', 'webhook'],
     demandPerMinute: 38,
     keys: [{ daysAgo: 7 }],
   },
@@ -141,8 +161,8 @@ export interface DeadGroupSeed {
 
 export const DEAD_GROUPS: DeadGroupSeed[] = [
   {
-    error: 'payment timeout: no answer within 30s',
-    type: 'webhook.deliver',
+    error: 'webhook: Post "https://hooks.acme.example.com/events": context deadline exceeded',
+    type: 'webhook',
     count: 4_200,
     teams: ['default', 'acme-billing'],
     firstHoursAgo: 2.3,
@@ -150,7 +170,7 @@ export const DEAD_GROUPS: DeadGroupSeed[] = [
     spiking: true,
   },
   {
-    error: 'smtp 550: mailbox unavailable',
+    error: 'email.send: 550 5.1.1 mailbox unavailable',
     type: 'email.send',
     count: 1_312,
     teams: ['northwind', 'default'],
@@ -158,7 +178,7 @@ export const DEAD_GROUPS: DeadGroupSeed[] = [
     lastMinutesAgo: 11,
   },
   {
-    error: 'image exceeds 25 MB limit',
+    error: 'image.resize: source is over 20 MB',
     type: 'image.resize',
     count: 846,
     teams: ['default', 'harbor-photos'],
@@ -167,14 +187,14 @@ export const DEAD_GROUPS: DeadGroupSeed[] = [
   },
   {
     error: 'webhook: dial tcp 10.0.4.17:443: connect: connection refused',
-    type: 'webhook.deliver',
+    type: 'webhook',
     count: 391,
     teams: ['northwind', 'default'],
     firstHoursAgo: 72,
     lastMinutesAgo: 126,
   },
   {
-    error: 'decode error: unsupported format HEIC',
+    error: 'image.resize: fetch source: got 404 Not Found',
     type: 'image.resize',
     count: 172,
     teams: ['default'],
@@ -184,44 +204,62 @@ export const DEAD_GROUPS: DeadGroupSeed[] = [
 ]
 
 export function payloadFor(type: string, team: string): unknown {
-  if (type === 'webhook.deliver') {
-    return {
-      url: `https://hooks.${team}.example.com/events`,
-      event: pick(['invoice.paid', 'order.shipped', 'customer.updated', 'refund.created']),
-      body: { id: `evt_${hex(12)}`, amount: randInt(900, 48_000), currency: 'USD' },
-      timeout_s: 30,
-    }
-  }
-  if (type === 'email.send') {
-    return {
-      to: pick(['m.rivera@example.com', 'ops@example.org', 'j.chen@example.net', 'billing@example.com']),
-      template: pick(['invoice-ready', 'password-reset', 'weekly-digest', 'order-confirmation']),
-      vars: { name: pick(['Maya', 'Jun', 'Priya', 'Tom', 'Ana']), invoice: `INV-${randInt(20_000, 29_999)}` },
-    }
-  }
-  return {
-    source: `s3://${team}/uploads/IMG_${randInt(1000, 9999)}.jpg`,
-    sizes: [320, 640, 1280],
-    format: 'webp',
-    quality: 82,
+  switch (type) {
+    case 'webhook':
+      return {
+        url: `https://hooks.${team}.example.com/events`,
+        body: {
+          id: `evt_${hex(12)}`,
+          type: pick(['invoice.paid', 'order.shipped', 'customer.updated', 'refund.created']),
+          amount: randInt(900, 48_000),
+        },
+      }
+    case 'email.send':
+      return {
+        to: pick(['m.rivera@example.com', 'ops@example.org', 'j.chen@example.net', 'billing@example.com']),
+        template: pick(['welcome', 'password-reset', 'invoice-ready']),
+        data: { name: pick(['Maya', 'Jun', 'Priya', 'Tom', 'Ana']) },
+      }
+    case 'image.resize':
+      return {
+        source: `https://cdn.${team}.example.com/uploads/IMG_${randInt(1000, 9999)}.jpg`,
+        sizes: [320, 640, 1280],
+        format: 'jpeg',
+      }
+    default:
+      return { seconds: randInt(2, 20) }
   }
 }
 
-export function resultFor(type: string, team: string, payload: unknown): unknown {
-  if (type === 'webhook.deliver') {
-    return { http_status: 200, response_ms: randInt(80, 900), body_bytes: randInt(2, 180) }
-  }
-  if (type === 'email.send') {
-    const to = (payload as { to?: string }).to
-    return { message_id: `<${hex(16)}@mailpit.local>`, accepted: to ? [to] : [], smtp: '250 OK' }
-  }
-  const sizes = (payload as { sizes?: number[] }).sizes ?? [320, 640, 1280]
-  return {
-    outputs: sizes.map((width) => ({
-      width,
-      key: `${team}/thumbs/${hex(8)}_${width}.webp`,
-      bytes: width * randInt(55, 90),
-    })),
-    source_bytes: randInt(2_400_000, 9_800_000),
+const SUBJECTS: Record<string, string> = {
+  welcome: 'Welcome to Tasklane',
+  'password-reset': 'Reset your password',
+  'invoice-ready': 'Your invoice is ready',
+}
+
+export function resultFor(type: string, payload: unknown): unknown {
+  switch (type) {
+    case 'webhook':
+      return { status: 200, body: '{"received":true}' }
+    case 'email.send': {
+      const p = payload as { to?: string; template?: string }
+      return { to: p.to ?? '', subject: SUBJECTS[p.template ?? ''] ?? 'Hello' }
+    }
+    case 'image.resize': {
+      const p = payload as { source?: string; sizes?: number[]; format?: string }
+      const format = p.format ?? 'jpeg'
+      const dir = `/data/images/${hex(16)}`
+      return {
+        source: p.source ?? '',
+        format,
+        outputs: (p.sizes ?? [320]).map((width) => ({
+          path: `${dir}/w${width}.${format === 'jpeg' ? 'jpg' : format}`,
+          width,
+          height: Math.round((width * 2) / 3),
+        })),
+      }
+    }
+    default:
+      return undefined
   }
 }

@@ -526,7 +526,8 @@ export class World {
       job.progress = Math.min(100, job.progress + rand(min, max) * dt)
       job.lease_until = iso(now + LEASE_MS)
       if (job.progress >= 100) {
-        if (Math.random() < 0.07) this.fail(job, pick(JOB_TYPES[job.type].errors), now)
+        const { errors } = JOB_TYPES[job.type]
+        if (errors.length > 0 && Math.random() < 0.07) this.fail(job, pick(errors), now)
         else this.succeed(job, now)
       }
       this.emitJob(job)
@@ -661,7 +662,7 @@ export class World {
       locked_by: undefined,
       finished_at: iso(at),
       updated_at: iso(at),
-      result: resultFor(job.type, this.teamById(job.team_id).seed.name, job.payload),
+      result: resultFor(job.type, job.payload),
     })
     this.addEvent(job, 'succeeded', at)
   }
@@ -806,10 +807,10 @@ export class World {
   // A job that failed once and then went through, to show a retry in the timeline.
   private seedRetriedExample() {
     this.seedJob(this.teamByName(DASHBOARD_TEAM), 'succeeded', 95, {
-      type: 'webhook.deliver',
+      type: 'webhook',
       priority: 7,
       failures: 1,
-      error: 'payment timeout: no answer within 30s',
+      error: 'webhook: got 503 Service Unavailable',
     })
   }
 
@@ -849,7 +850,7 @@ export class World {
     for (let i = 0; i < failures; i++) {
       this.start(job, pastWorker(), t)
       const error = errorFor()
-      t += (error.startsWith('payment timeout') ? 30 : rand(0.3, 4)) * SECOND
+      t += (error.includes('deadline exceeded') ? 15 : rand(0.3, 4)) * SECOND
       if (target === 'failed' && i === failures - 1) {
         this.fail(job, error, t, now + rand(4, 25) * SECOND)
         return job
@@ -871,7 +872,7 @@ export class World {
     const imageShare = busy ? 0.86 : 0.3
     const held = Math.round(Math.min(this.rateHeld, this.queued))
     const rates: Record<string, number> = {
-      'webhook.deliver': total * (1 - imageShare) * 0.7,
+      webhook: total * (1 - imageShare) * 0.7,
       'image.resize': total * imageShare,
       'email.send': Math.min(10, total * (1 - imageShare) * 0.3 + (held > 0 ? 6 : 0)),
     }
@@ -908,7 +909,7 @@ export class World {
         type,
         timeout_seconds: JOB_TYPES[type].timeoutSeconds,
         outgoing_per_second: JOB_TYPES[type].outgoingPerSecond,
-        rate_per_second: rates[type],
+        rate_per_second: rates[type] ?? 0,
         held: type === 'email.send' ? held : 0,
       })),
     }
