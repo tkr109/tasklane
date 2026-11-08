@@ -52,6 +52,8 @@ type Worker struct {
 type Jobs struct {
 	// WebhookSecret signs every webhook so receivers can tell it came from us.
 	WebhookSecret string
+	// DataDir is where jobs write files, such as resized images.
+	DataDir string
 }
 
 func Load() (Config, error) {
@@ -82,6 +84,7 @@ func Load() (Config, error) {
 		},
 		Jobs: Jobs{
 			WebhookSecret: l.str("WEBHOOK_SECRET", ""),
+			DataDir:       l.str("DATA_DIR", "data"),
 		},
 	}
 	if err := cfg.LogLevel.UnmarshalText([]byte(l.str("LOG_LEVEL", "info"))); err != nil {

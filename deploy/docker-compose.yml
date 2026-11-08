@@ -42,6 +42,9 @@ services:
       DATABASE_URL: postgres://tasklane:tasklane@postgres:5432/tasklane?sslmode=disable
       LOG_FORMAT: json
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-whsec_localdev}
+      DATA_DIR: /data
+    volumes:
+      - jobdata:/data
     stop_grace_period: 40s
     depends_on:
       postgres:
@@ -53,3 +56,4 @@ services:
 
 volumes:
   pgdata:
+  jobdata:

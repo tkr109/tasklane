@@ -26,9 +26,10 @@ type Registry map[string]Type
 
 func Defaults(cfg config.Jobs) Registry {
 	return Registry{
-		"sleep":   {Handler: Sleep, Timeout: 5 * time.Minute},
-		"flaky":   {Handler: Flaky, Timeout: 30 * time.Second},
-		"webhook": {Handler: Webhook(cfg.WebhookSecret), Timeout: 15 * time.Second},
+		"sleep":        {Handler: Sleep, Timeout: 5 * time.Minute},
+		"flaky":        {Handler: Flaky, Timeout: 30 * time.Second},
+		"webhook":      {Handler: Webhook(cfg.WebhookSecret), Timeout: 15 * time.Second},
+		"image.resize": {Handler: ImageResize(cfg.DataDir), Timeout: time.Minute},
 	}
 }
 
