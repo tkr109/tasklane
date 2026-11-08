@@ -140,7 +140,7 @@ func Load() (Config, error) {
 			Min:           l.int("SCALER_MIN", 2),
 			Max:           l.int("SCALER_MAX", 10),
 			JobsPerWorker: l.int("JOBS_PER_WORKER", 500),
-			Interval:      l.duration("SCALER_INTERVAL", 2*time.Second),
+			Interval:      l.duration("SCALER_INTERVAL", time.Second),
 			Cooldown:      l.duration("SCALER_COOLDOWN", 20*time.Second),
 			StepDown:      l.duration("SCALER_STEP_DOWN", 3*time.Second),
 			Driver:        l.str("SCALER_DRIVER", "noop"),
