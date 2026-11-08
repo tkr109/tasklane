@@ -238,9 +238,11 @@ func (w *Worker) execute(jobCtx context.Context, job models.Job) {
 
 	log.Info("job started")
 	start := time.Now()
-	err := runHandler(ctx, jt.Handler, job, func(percent int) {
+	progress := newProgress(progressEvery, func(percent int) {
 		w.setProgress(ctx, job.ID, percent)
 	})
+	err := runHandler(ctx, jt.Handler, job, progress.report)
+	progress.stop()
 
 	// The outcome is recorded even if the job's own context has just ended.
 	writeCtx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
