@@ -108,7 +108,6 @@
 }
 
 .timeline li {
-  --c: var(--queued);
   position: relative;
   padding: 0 0 18px 26px;
 }
@@ -134,12 +133,12 @@
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  border: 2px solid var(--c);
+  border: 2px solid var(--c, var(--queued));
   background: var(--panel);
 }
 
 .timeline li.filled .dot {
-  background: var(--c);
+  background: var(--c, var(--queued));
 }
 
 .timeline .h {
