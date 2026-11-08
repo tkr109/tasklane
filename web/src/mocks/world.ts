@@ -705,13 +705,26 @@ export class World {
       ['cancelled', 2],
       ['succeeded', 52],
     ]
-    for (const [status, count] of plan) {
-      for (let i = 0; i < count; i++) {
-        const age = status === 'running' ? rand(4, 40) : status === 'queued' ? rand(1, 30) : rand(60, 3200)
-        this.seedJob(this.pickBackgroundTeam(), status, age)
+    let seeded = false
+    // Seed oldest first so ids rise with creation time, like the real identity column.
+    const seeds = plan
+      .flatMap(([status, count]) => Array.from({ length: count }, () => status))
+      .map((status) => ({
+        status,
+        age: status === 'running' ? rand(4, 40) : status === 'queued' ? rand(1, 30) : rand(100, 3200),
+      }))
+      .sort((a, b) => b.age - a.age)
+    for (const { status, age } of seeds) {
+      if (age < 95 && !seeded) {
+        this.seedRetriedExample()
+        seeded = true
       }
+      this.seedJob(this.pickBackgroundTeam(), status, age)
     }
-    // One job that failed once and then went through, to show a retry in the timeline.
+  }
+
+  // A job that failed once and then went through, to show a retry in the timeline.
+  private seedRetriedExample() {
     this.seedJob(this.teamByName('acme-billing'), 'succeeded', 95, {
       type: 'webhook.deliver',
       priority: 7,
