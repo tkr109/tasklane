@@ -54,10 +54,15 @@ func (h *Jobs) Submit(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	nj, err := h.queue.Prepare(teamID(r), req.spec(), r.Header.Get("Idempotency-Key"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
 	if !h.admit(w, r, 1) {
 		return
 	}
-	job, created, err := h.queue.Submit(r.Context(), teamID(r), req.spec(), r.Header.Get("Idempotency-Key"))
+	job, created, err := h.queue.Enqueue(r.Context(), nj)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -80,10 +85,15 @@ func (h *Jobs) SubmitBatch(w http.ResponseWriter, r *http.Request) {
 	for i, j := range req.Jobs {
 		specs[i] = j.spec()
 	}
-	if !h.admit(w, r, len(specs)) {
+	batch, err := h.queue.PrepareBatch(teamID(r), specs)
+	if err != nil {
+		writeServiceError(w, err)
 		return
 	}
-	created, err := h.queue.SubmitBatch(r.Context(), teamID(r), specs)
+	if !h.admit(w, r, len(batch)) {
+		return
+	}
+	created, err := h.queue.EnqueueBatch(r.Context(), batch)
 	if err != nil {
 		writeServiceError(w, err)
 		return

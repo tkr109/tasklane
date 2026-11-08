@@ -48,18 +48,33 @@ func NewQueue(repo *repositories.Jobs, types jobs.Registry) *Queue {
 }
 
 func (q *Queue) Submit(ctx context.Context, teamID int64, spec JobSpec, idempotencyKey string) (job models.Job, created bool, err error) {
-	if len(idempotencyKey) > maxKeyLength {
-		return job, false, fmt.Errorf("%w: idempotency key longer than %d characters", ErrInvalid, maxKeyLength)
-	}
-	nj, err := newJob(q.types, teamID, spec)
+	nj, err := q.Prepare(teamID, spec, idempotencyKey)
 	if err != nil {
 		return job, false, err
 	}
-	nj.IdempotencyKey = idempotencyKey
-	return q.repo.Create(ctx, nj)
+	return q.Enqueue(ctx, nj)
 }
 
 func (q *Queue) SubmitBatch(ctx context.Context, teamID int64, specs []JobSpec) ([]models.Job, error) {
+	batch, err := q.PrepareBatch(teamID, specs)
+	if err != nil {
+		return nil, err
+	}
+	return q.EnqueueBatch(ctx, batch)
+}
+
+// Prepare checks a submit and fills in its defaults without queueing anything,
+// so the API can turn a bad request away before charging its rate limit.
+func (q *Queue) Prepare(teamID int64, spec JobSpec, idempotencyKey string) (models.NewJob, error) {
+	if len(idempotencyKey) > maxKeyLength {
+		return models.NewJob{}, fmt.Errorf("%w: idempotency key longer than %d characters", ErrInvalid, maxKeyLength)
+	}
+	nj, err := newJob(q.types, teamID, spec)
+	nj.IdempotencyKey = idempotencyKey
+	return nj, err
+}
+
+func (q *Queue) PrepareBatch(teamID int64, specs []JobSpec) ([]models.NewJob, error) {
 	if len(specs) == 0 || len(specs) > MaxBatchSize {
 		return nil, fmt.Errorf("%w: a batch holds 1 to %d jobs", ErrInvalid, MaxBatchSize)
 	}
@@ -71,6 +86,16 @@ func (q *Queue) SubmitBatch(ctx context.Context, teamID int64, specs []JobSpec) 
 		}
 		batch[i] = nj
 	}
+	return batch, nil
+}
+
+// Enqueue inserts a prepared job. If the team already used its idempotency key,
+// it returns the original job and created is false.
+func (q *Queue) Enqueue(ctx context.Context, nj models.NewJob) (job models.Job, created bool, err error) {
+	return q.repo.Create(ctx, nj)
+}
+
+func (q *Queue) EnqueueBatch(ctx context.Context, batch []models.NewJob) ([]models.Job, error) {
 	return q.repo.CreateBatch(ctx, batch)
 }
 

@@ -480,6 +480,42 @@ func TestSubmitsOverTheRateLimitGet429(t *testing.T) {
 	}
 }
 
+func TestBadSubmitsDontSpendTokens(t *testing.T) {
+	a := newAPI(t, time.Minute)
+	_, big := a.createTeam("acme", "enterprise") // a burst of 20,000
+	_, small := a.createTeam("globex", "free")   // a burst of 200
+
+	oneBad := batchOf(100)
+	oneBad["jobs"].([]map[string]string)[42]["type"] = "nope"
+	for name, req := range map[string]struct {
+		path string
+		body any
+	}{
+		"an unknown type":        {"/api/jobs", map[string]any{"type": "nope"}},
+		"a priority of 12":       {"/api/jobs", map[string]any{"type": "sleep", "priority": 12}},
+		"a bad delay":            {"/api/jobs", map[string]any{"type": "sleep", "delay": "soon"}},
+		"a batch over 500":       {"/api/jobs/batch", batchOf(501)},
+		"a batch with a bad job": {"/api/jobs/batch", oneBad},
+	} {
+		if code := a.call("POST", req.path, big.Key, req.body, nil); code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", name, code)
+		}
+	}
+	if code := a.call("POST", "/api/jobs/batch", small.Key, batchOf(201), nil); code != http.StatusBadRequest {
+		t.Errorf("a batch over the burst: status %d, want 400", code)
+	}
+
+	for key, burst := range map[string]int{big.Key: 20_000, small.Key: 200} {
+		resp := a.do("POST", "/api/jobs", key, map[string]string{"type": "sleep"}, nil)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("a good submit: status %d", resp.StatusCode)
+		}
+		if left := headerInt(t, resp, "X-RateLimit-Remaining"); left != burst-1 {
+			t.Errorf("remaining after one good submit = %d, want %d", left, burst-1)
+		}
+	}
+}
+
 func TestOverloadedQueueGets503(t *testing.T) {
 	a := newAPIWithCeiling(t, time.Minute, 5)
 	_, key := a.createTeam("acme", "pro")
