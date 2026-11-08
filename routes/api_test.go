@@ -104,11 +104,11 @@ func newAPIWith(t *testing.T, cfg config.API) *api {
 	jobsRepo := repositories.NewJobs(pool)
 	events := services.NewEvents(repositories.NewEvents(pool))
 	monitor := services.NewMonitor(jobsRepo, repositories.NewWorkers(pool), repositories.NewTeams(pool), events,
-		jobs.Defaults(), map[string]float64{"flaky": 5}, cfg.QueueCeiling)
+		jobs.Defaults(config.Jobs{}), map[string]float64{"flaky": 5}, cfg.QueueCeiling)
 	handler := New(
-		controllers.NewJobs(services.NewQueue(jobsRepo, jobs.Defaults()),
+		controllers.NewJobs(services.NewQueue(jobsRepo, jobs.Defaults(config.Jobs{})),
 			services.NewLimits(repositories.NewRateBuckets(pool), jobsRepo, events, cfg.QueueCeiling)),
-		controllers.NewSchedules(services.NewSchedules(repositories.NewSchedules(pool), jobs.Defaults(), cfg.MaxSchedulesPerTeam)),
+		controllers.NewSchedules(services.NewSchedules(repositories.NewSchedules(pool), jobs.Defaults(config.Jobs{}), cfg.MaxSchedulesPerTeam)),
 		controllers.NewTeams(services.NewTeams(repositories.NewTeams(pool), keys, auth)),
 		controllers.NewDashboard(monitor, services.NewDeadJobs(jobsRepo)),
 		controllers.NewEvents(events),

@@ -232,7 +232,7 @@ func TestAReconnectReplaysWhatItMissed(t *testing.T) {
 func startWorker(t *testing.T) (stop func()) {
 	t.Helper()
 	w := services.NewWorker(repositories.NewJobs(pgPool), repositories.NewWorkers(pgPool),
-		repositories.NewRateBuckets(pgPool), jobs.Defaults(), config.Worker{
+		repositories.NewRateBuckets(pgPool), jobs.Defaults(config.Jobs{}), config.Worker{
 			Concurrency:       2,
 			Lease:             2 * time.Second,
 			PollInterval:      50 * time.Millisecond,

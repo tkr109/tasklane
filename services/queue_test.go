@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tkr109/tasklane/config"
 	"github.com/tkr109/tasklane/jobs"
 	"github.com/tkr109/tasklane/repositories"
 )
@@ -14,7 +15,7 @@ import (
 func TestIdempotencyKeyReturnsTheOriginalJob(t *testing.T) {
 	pool := testDB(t)
 	team := defaultTeam(t, pool)
-	queue := NewQueue(repositories.NewJobs(pool), jobs.Defaults())
+	queue := NewQueue(repositories.NewJobs(pool), jobs.Defaults(config.Jobs{}))
 	ctx := context.Background()
 	spec := JobSpec{Type: "sleep"}
 
@@ -115,7 +116,7 @@ func TestDelayedJobWaitsForItsTime(t *testing.T) {
 	ctx := context.Background()
 	team := defaultTeam(t, pool)
 	repo := repositories.NewJobs(pool)
-	queue := NewQueue(repo, jobs.Defaults())
+	queue := NewQueue(repo, jobs.Defaults(config.Jobs{}))
 
 	later, _, err := queue.Submit(ctx, team, JobSpec{Type: "sleep", Delay: "1h"}, "")
 	if err != nil {

@@ -67,12 +67,12 @@ func TestTypeLimitHoldsAcrossWorkers(t *testing.T) {
 		mu     sync.Mutex
 		starts []time.Time
 	)
-	types := jobs.Registry{"limited": {Timeout: 5 * time.Second, Handler: func(context.Context, json.RawMessage, jobs.Progress) error {
+	types := jobs.Registry{"limited": {Timeout: 5 * time.Second, Handler: func(context.Context, json.RawMessage, jobs.Progress) (any, error) {
 		mu.Lock()
 		starts = append(starts, time.Now())
 		mu.Unlock()
 		time.Sleep(5 * time.Millisecond)
-		return nil
+		return nil, nil
 	}}}
 
 	once := 1

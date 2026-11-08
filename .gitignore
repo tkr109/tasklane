@@ -1,4 +1,5 @@
 /tasklane
+/data/
 /bin/
 *.test
 *.out

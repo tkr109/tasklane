@@ -39,6 +39,7 @@ type Job struct {
 	IdempotencyKey string          `json:"idempotency_key,omitempty"`
 	Progress       int             `json:"progress"`
 	LastError      string          `json:"last_error,omitempty"`
+	Result         json.RawMessage `json:"result,omitempty"`
 	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`
 	StartedAt      *time.Time      `json:"started_at,omitempty"`

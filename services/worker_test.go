@@ -78,16 +78,16 @@ func TestTwoWorkersNeverRunTheSameJob(t *testing.T) {
 		mu   sync.Mutex
 		runs = map[int]int{}
 	)
-	types := jobs.Registry{"count": {Timeout: 5 * time.Second, Handler: func(ctx context.Context, payload json.RawMessage, _ jobs.Progress) error {
+	types := jobs.Registry{"count": {Timeout: 5 * time.Second, Handler: func(ctx context.Context, payload json.RawMessage, _ jobs.Progress) (any, error) {
 		var p struct{ N int }
 		if err := json.Unmarshal(payload, &p); err != nil {
-			return err
+			return nil, err
 		}
 		mu.Lock()
 		runs[p.N]++
 		mu.Unlock()
 		time.Sleep(time.Millisecond)
-		return nil
+		return nil, nil
 	}}}
 
 	const total = 300
@@ -123,12 +123,46 @@ func TestTwoWorkersNeverRunTheSameJob(t *testing.T) {
 	}
 }
 
+func TestSucceededJobKeepsItsResult(t *testing.T) {
+	pool := testDB(t)
+	ctx := context.Background()
+	types := jobs.Registry{
+		"answer": {Timeout: time.Second, Handler: func(context.Context, json.RawMessage, jobs.Progress) (any, error) {
+			return map[string]int{"answer": 42}, nil
+		}},
+		"quiet": {Timeout: time.Second, Handler: func(context.Context, json.RawMessage, jobs.Progress) (any, error) {
+			return nil, nil
+		}},
+	}
+	queue := NewQueue(repositories.NewJobs(pool), types)
+	answer, _, err := queue.Submit(ctx, defaultTeam(t, pool), JobSpec{Type: "answer"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	quiet, _, err := queue.Submit(ctx, defaultTeam(t, pool), JobSpec{Type: "quiet"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startWorker(t, pool, types)
+	waitUntil(t, 5*time.Second, "both jobs to succeed", func() bool {
+		return jobStatus(t, pool, answer.ID).Status == models.StatusSucceeded &&
+			jobStatus(t, pool, quiet.ID).Status == models.StatusSucceeded
+	})
+	if got := string(jobStatus(t, pool, answer.ID).Result); got != `{"answer": 42}` {
+		t.Errorf("result = %s", got)
+	}
+	if got := jobStatus(t, pool, quiet.ID).Result; got != nil {
+		t.Errorf("a job with no result stored %s", got)
+	}
+}
+
 func TestExpiredLeaseIsRequeued(t *testing.T) {
 	pool := testDB(t)
 	ctx := context.Background()
 	repo := repositories.NewJobs(pool)
-	types := jobs.Registry{"noop": {Timeout: time.Second, Handler: func(context.Context, json.RawMessage, jobs.Progress) error {
-		return nil
+	types := jobs.Registry{"noop": {Timeout: time.Second, Handler: func(context.Context, json.RawMessage, jobs.Progress) (any, error) {
+		return nil, nil
 	}}}
 
 	submitted, _, err := NewQueue(repo, types).Submit(ctx, defaultTeam(t, pool), JobSpec{Type: "noop"}, "")
@@ -219,8 +253,8 @@ func TestReapersRunOneAtATime(t *testing.T) {
 func TestJobGoesDeadAfterMaxAttempts(t *testing.T) {
 	pool := testDB(t)
 	ctx := context.Background()
-	types := jobs.Registry{"boom": {Timeout: time.Second, Handler: func(context.Context, json.RawMessage, jobs.Progress) error {
-		return errors.New("boom")
+	types := jobs.Registry{"boom": {Timeout: time.Second, Handler: func(context.Context, json.RawMessage, jobs.Progress) (any, error) {
+		return nil, errors.New("boom")
 	}}}
 
 	maxAttempts := 3
@@ -247,12 +281,38 @@ func TestJobGoesDeadAfterMaxAttempts(t *testing.T) {
 	}
 }
 
+func TestPermanentErrorSkipsRetries(t *testing.T) {
+	pool := testDB(t)
+	ctx := context.Background()
+	types := jobs.Registry{"bad": {Timeout: time.Second, Handler: func(context.Context, json.RawMessage, jobs.Progress) (any, error) {
+		return nil, jobs.Permanent(errors.New("bad payload"))
+	}}}
+
+	submitted, _, err := NewQueue(repositories.NewJobs(pool), types).
+		Submit(ctx, defaultTeam(t, pool), JobSpec{Type: "bad"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startWorker(t, pool, types)
+	waitUntil(t, 5*time.Second, "the job to die", func() bool {
+		return jobStatus(t, pool, submitted.ID).Status == models.StatusDead
+	})
+	job := jobStatus(t, pool, submitted.ID)
+	if job.Attempts != 1 || job.LastError != "bad payload" {
+		t.Fatalf("dead job: attempts=%d last_error=%q", job.Attempts, job.LastError)
+	}
+	if got := countEvents(t, pool, "failed"); got != 0 {
+		t.Errorf("%d failed events, want none", got)
+	}
+}
+
 func TestTimeoutCountsAsFailure(t *testing.T) {
 	pool := testDB(t)
 	ctx := context.Background()
-	types := jobs.Registry{"hang": {Timeout: 100 * time.Millisecond, Handler: func(ctx context.Context, _ json.RawMessage, _ jobs.Progress) error {
+	types := jobs.Registry{"hang": {Timeout: 100 * time.Millisecond, Handler: func(ctx context.Context, _ json.RawMessage, _ jobs.Progress) (any, error) {
 		<-ctx.Done()
-		return ctx.Err()
+		return nil, ctx.Err()
 	}}}
 
 	once := 1

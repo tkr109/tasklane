@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/mail"
 	"os"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ type Config struct {
 	LogFormat   string
 	API         API
 	Worker      Worker
+	Jobs        Jobs
 }
 
 type API struct {
@@ -50,6 +52,18 @@ type Worker struct {
 	TypeLimits map[string]float64
 }
 
+// Jobs holds what the job handlers need to reach the outside world.
+type Jobs struct {
+	// WebhookSecret signs every webhook so receivers can tell it came from us.
+	WebhookSecret string
+	// DataDir is where jobs write files, such as resized images.
+	DataDir  string
+	SMTPHost string
+	SMTPPort int
+	// SMTPFrom is the sender of every email, like "Tasklane <noreply@example.com>".
+	SMTPFrom string
+}
+
 func Load() (Config, error) {
 	l := loader{}
 	cfg := Config{
@@ -75,7 +89,14 @@ func Load() (Config, error) {
 			RetryMaxDelay:     l.duration("RETRY_MAX_DELAY", 10*time.Minute),
 			AgingStep:         l.duration("PRIORITY_AGING_STEP", 30*time.Second),
 			FairShareWindow:   l.duration("FAIR_SHARE_WINDOW", time.Minute),
-			TypeLimits:        l.rates("TYPE_RATE_LIMITS", "email=10/s,webhook=200/s"),
+			TypeLimits:        l.rates("TYPE_RATE_LIMITS", "email.send=10/s,webhook=200/s"),
+		},
+		Jobs: Jobs{
+			WebhookSecret: l.str("WEBHOOK_SECRET", ""),
+			DataDir:       l.str("DATA_DIR", "data"),
+			SMTPHost:      l.str("SMTP_HOST", "localhost"),
+			SMTPPort:      l.int("SMTP_PORT", 1025),
+			SMTPFrom:      l.str("SMTP_FROM", "Tasklane <noreply@tasklane.local>"),
 		},
 	}
 	if err := cfg.LogLevel.UnmarshalText([]byte(l.str("LOG_LEVEL", "info"))); err != nil {
@@ -98,6 +119,12 @@ func Load() (Config, error) {
 	}
 	if cfg.API.MaxSchedulesPerTeam < 1 {
 		l.fail("MAX_SCHEDULES_PER_TEAM", fmt.Errorf("must be at least 1"))
+	}
+	if cfg.Jobs.SMTPPort < 1 || cfg.Jobs.SMTPPort > 65535 {
+		l.fail("SMTP_PORT", fmt.Errorf("must be between 1 and 65535"))
+	}
+	if _, err := mail.ParseAddress(cfg.Jobs.SMTPFrom); err != nil {
+		l.fail("SMTP_FROM", err)
 	}
 	return cfg, l.err
 }
