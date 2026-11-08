@@ -349,8 +349,10 @@ Apple M4 with Docker Desktop (10 CPUs), timed from the first batch:
 | back to 2 workers, one step every 3s  | 56s   |
 
 The same flood on two fixed workers took 45s. Ten workers run five times as many jobs at once
-but finish only 1.8x sooner: at about 400 jobs a second the database is the limit, as every
-grab and finish of one team updates its `team_usage` row and sends a `NOTIFY`.
+but finish only 1.8x sooner. `docs/benchmarks.md` has the measurements: every grab and finish of
+one team used to queue on its `team_usage` row and on the order Postgres commits `NOTIFY`s in,
+but most of the gap is the image work itself, which takes about 9ms a job on two workers and
+22ms on ten, as ten busy containers spill onto the M4's efficiency cores.
 
 ## Live updates
 
@@ -393,8 +395,10 @@ short, far under `NOTIFY`'s 8000-byte limit; Go refuses to send one over 4000.
   The counts read partial indexes (queued and failed jobs, today's successes, dead jobs) or
   small tables.
 - **Cost.** Every job change is a `NOTIFY`, and Postgres serialises the commits of
-  transactions that notify. That caps how fast jobs can change state; it's ample for a laptop,
-  and Redis pub/sub could take over behind the same service if load tests say otherwise.
+  transactions that notify, each holding a cluster-wide lock until its WAL is flushed. That caps
+  how fast jobs can change state: empty jobs reach about 1,900 a second on a laptop
+  (`docs/benchmarks.md`). Redis pub/sub could take over behind the same service if that is ever
+  too few.
 - **Auth.** The stream takes the admin token. `EventSource` can't send headers, so this one
   route also takes it as `?token=`; the request log records the path without the query.
 
