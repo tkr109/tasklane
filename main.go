@@ -84,15 +84,29 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 	}
 	defer pool.Close()
 
-	teamID, err := repositories.NewTeams(pool).IDByName(ctx, "default")
-	if err != nil {
-		return fmt.Errorf("look up default team: %w", err)
+	keys := repositories.NewKeys(pool)
+	teams := services.NewTeams(repositories.NewTeams(pool), keys)
+	if cfg.API.DevAPIKey != "" {
+		if err := teams.EnsureDevKey(ctx, cfg.API.DevAPIKey); err != nil {
+			return fmt.Errorf("dev api key: %w", err)
+		}
+		slog.Info("dev api key for the default team", "key", cfg.API.DevAPIKey)
 	}
-	queue := services.NewQueue(repositories.NewJobs(pool), jobs.Defaults())
+	if cfg.API.AdminToken == "" {
+		slog.Warn("ADMIN_TOKEN is not set, admin endpoints are off")
+	}
 
+	queue := services.NewQueue(repositories.NewJobs(pool), jobs.Defaults())
+	handler := routes.New(
+		controllers.NewJobs(queue),
+		controllers.NewTeams(teams),
+		services.NewAuth(keys, cfg.API.AuthCacheTTL),
+		cfg.API.AdminToken,
+		pool.Ping,
+	)
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           routes.New(controllers.NewJobs(queue, teamID), pool.Ping),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
