@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tkr109/tasklane/config"
 	"github.com/tkr109/tasklane/jobs"
 )
 
@@ -58,7 +59,7 @@ func TestNextRunRejectsBadSchedules(t *testing.T) {
 }
 
 func TestBuildSchedule(t *testing.T) {
-	s := NewSchedules(nil, jobs.Defaults())
+	s := NewSchedules(nil, jobs.Defaults(config.Jobs{}))
 	now := time.Date(2026, 3, 2, 10, 7, 0, 0, time.UTC)
 
 	sc, err := s.build(1, ScheduleSpec{Cron: " * * * * * ", Type: "sleep"}, now)

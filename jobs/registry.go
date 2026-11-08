@@ -6,6 +6,8 @@ import (
 	"maps"
 	"slices"
 	"time"
+
+	"github.com/tkr109/tasklane/config"
 )
 
 // Progress reports how far along a job is, from 0 to 100.
@@ -22,10 +24,11 @@ type Type struct {
 // Registry maps a job type name to the code that runs it.
 type Registry map[string]Type
 
-func Defaults() Registry {
+func Defaults(cfg config.Jobs) Registry {
 	return Registry{
-		"sleep": {Handler: Sleep, Timeout: 5 * time.Minute},
-		"flaky": {Handler: Flaky, Timeout: 30 * time.Second},
+		"sleep":   {Handler: Sleep, Timeout: 5 * time.Minute},
+		"flaky":   {Handler: Flaky, Timeout: 30 * time.Second},
+		"webhook": {Handler: Webhook(cfg.WebhookSecret), Timeout: 15 * time.Second},
 	}
 }
 

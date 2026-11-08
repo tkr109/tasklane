@@ -19,6 +19,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"github.com/tkr109/tasklane/config"
 	"github.com/tkr109/tasklane/controllers"
 	"github.com/tkr109/tasklane/jobs"
 	"github.com/tkr109/tasklane/repositories"
@@ -98,9 +99,9 @@ func newAPIWithCeiling(t *testing.T, cacheTTL time.Duration, ceiling int) *api {
 	keys := repositories.NewKeys(pool)
 	auth := services.NewAuth(keys, cacheTTL)
 	handler := New(
-		controllers.NewJobs(services.NewQueue(repositories.NewJobs(pool), jobs.Defaults()),
+		controllers.NewJobs(services.NewQueue(repositories.NewJobs(pool), jobs.Defaults(config.Jobs{})),
 			services.NewLimits(repositories.NewRateBuckets(pool), repositories.NewJobs(pool), ceiling)),
-		controllers.NewSchedules(services.NewSchedules(repositories.NewSchedules(pool), jobs.Defaults())),
+		controllers.NewSchedules(services.NewSchedules(repositories.NewSchedules(pool), jobs.Defaults(config.Jobs{}))),
 		controllers.NewTeams(services.NewTeams(repositories.NewTeams(pool), keys, auth)),
 		auth, adminToken, pool.Ping,
 	)

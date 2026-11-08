@@ -112,11 +112,11 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 	}()
 
 	jobsRepo := repositories.NewJobs(pool)
-	queue := services.NewQueue(jobsRepo, jobs.Defaults())
+	queue := services.NewQueue(jobsRepo, jobs.Defaults(cfg.Jobs))
 	limits := services.NewLimits(repositories.NewRateBuckets(pool), jobsRepo, cfg.API.QueueCeiling)
 	handler := routes.New(
 		controllers.NewJobs(queue, limits),
-		controllers.NewSchedules(services.NewSchedules(schedules, jobs.Defaults())),
+		controllers.NewSchedules(services.NewSchedules(schedules, jobs.Defaults(cfg.Jobs))),
 		controllers.NewTeams(teams),
 		auth,
 		cfg.API.AdminToken,
@@ -156,7 +156,10 @@ func runWorker(ctx context.Context, cfg config.Config) error {
 	}
 	defer pool.Close()
 
+	if cfg.Jobs.WebhookSecret == "" {
+		slog.Warn("WEBHOOK_SECRET is not set, receivers can't trust webhook signatures")
+	}
 	worker := services.NewWorker(repositories.NewJobs(pool), repositories.NewWorkers(pool),
-		repositories.NewRateBuckets(pool), jobs.Defaults(), cfg.Worker)
+		repositories.NewRateBuckets(pool), jobs.Defaults(cfg.Jobs), cfg.Worker)
 	return worker.Run(ctx)
 }

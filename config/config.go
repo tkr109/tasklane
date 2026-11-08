@@ -16,6 +16,7 @@ type Config struct {
 	LogFormat   string
 	API         API
 	Worker      Worker
+	Jobs        Jobs
 }
 
 type API struct {
@@ -47,6 +48,12 @@ type Worker struct {
 	TypeLimits map[string]float64
 }
 
+// Jobs holds what the job handlers need to reach the outside world.
+type Jobs struct {
+	// WebhookSecret signs every webhook so receivers can tell it came from us.
+	WebhookSecret string
+}
+
 func Load() (Config, error) {
 	l := loader{}
 	cfg := Config{
@@ -72,6 +79,9 @@ func Load() (Config, error) {
 			AgingStep:         l.duration("PRIORITY_AGING_STEP", 30*time.Second),
 			FairShareWindow:   l.duration("FAIR_SHARE_WINDOW", time.Minute),
 			TypeLimits:        l.rates("TYPE_RATE_LIMITS", "email=10/s,webhook=200/s"),
+		},
+		Jobs: Jobs{
+			WebhookSecret: l.str("WEBHOOK_SECRET", ""),
 		},
 	}
 	if err := cfg.LogLevel.UnmarshalText([]byte(l.str("LOG_LEVEL", "info"))); err != nil {
