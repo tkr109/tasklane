@@ -33,12 +33,13 @@ type ScheduleSpec struct {
 
 // Schedules manages a team's repeating jobs. The Scheduler fires them.
 type Schedules struct {
-	repo  *repositories.Schedules
-	types jobs.Registry
+	repo       *repositories.Schedules
+	types      jobs.Registry
+	maxPerTeam int
 }
 
-func NewSchedules(repo *repositories.Schedules, types jobs.Registry) *Schedules {
-	return &Schedules{repo: repo, types: types}
+func NewSchedules(repo *repositories.Schedules, types jobs.Registry, maxPerTeam int) *Schedules {
+	return &Schedules{repo: repo, types: types, maxPerTeam: maxPerTeam}
 }
 
 func (s *Schedules) Create(ctx context.Context, teamID int64, spec ScheduleSpec) (models.Schedule, error) {
@@ -46,7 +47,11 @@ func (s *Schedules) Create(ctx context.Context, teamID int64, spec ScheduleSpec)
 	if err != nil {
 		return sc, err
 	}
-	return s.repo.Create(ctx, sc)
+	sc, err = s.repo.Create(ctx, sc, s.maxPerTeam)
+	if errors.Is(err, repositories.ErrFull) {
+		return sc, fmt.Errorf("%w: a team can have %d schedules at most, delete one to add another", ErrConflict, s.maxPerTeam)
+	}
+	return sc, err
 }
 
 func (s *Schedules) List(ctx context.Context, teamID int64) ([]models.Schedule, error) {

@@ -12,6 +12,9 @@ import (
 	"github.com/tkr109/tasklane/models"
 )
 
+// ErrFull means a team already has as many schedules as it may.
+var ErrFull = errors.New("limit reached")
+
 const scheduleColumns = `id, team_id, cron, timezone, type, payload, priority, max_attempts, enabled,
 	next_run_at, last_run_at, created_at, updated_at`
 
@@ -39,12 +42,37 @@ func collectSchedules(rows pgx.Rows) ([]models.Schedule, error) {
 	})
 }
 
-func (r *Schedules) Create(ctx context.Context, s models.Schedule) (models.Schedule, error) {
-	return scanSchedule(r.db.QueryRow(ctx, `
+// Create adds a schedule unless its team already has limit of them, in which
+// case it returns ErrFull.
+func (r *Schedules) Create(ctx context.Context, s models.Schedule, limit int) (models.Schedule, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return s, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Creates for one team take turns on its row, so each counts what the one
+	// before it added. No key update leaves inserts that reference the team alone.
+	var count int
+	if _, err := tx.Exec(ctx, `select from teams where id = $1 for no key update`, s.TeamID); err != nil {
+		return s, err
+	}
+	if err := tx.QueryRow(ctx, `select count(*) from schedules where team_id = $1`, s.TeamID).Scan(&count); err != nil {
+		return s, err
+	}
+	if count >= limit {
+		return s, ErrFull
+	}
+
+	created, err := scanSchedule(tx.QueryRow(ctx, `
 		insert into schedules (team_id, cron, timezone, type, payload, priority, max_attempts, enabled, next_run_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		returning `+scheduleColumns,
 		s.TeamID, s.Cron, s.Timezone, s.Type, s.Payload, s.Priority, s.MaxAttempts, s.Enabled, s.NextRunAt))
+	if err != nil {
+		return s, err
+	}
+	return created, tx.Commit(ctx)
 }
 
 func (r *Schedules) List(ctx context.Context, teamID int64) ([]models.Schedule, error) {

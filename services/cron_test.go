@@ -58,7 +58,7 @@ func TestNextRunRejectsBadSchedules(t *testing.T) {
 }
 
 func TestBuildSchedule(t *testing.T) {
-	s := NewSchedules(nil, jobs.Defaults())
+	s := NewSchedules(nil, jobs.Defaults(), 50)
 	now := time.Date(2026, 3, 2, 10, 7, 0, 0, time.UTC)
 
 	sc, err := s.build(1, ScheduleSpec{Cron: " * * * * * ", Type: "sleep"}, now)

@@ -19,6 +19,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"github.com/tkr109/tasklane/config"
 	"github.com/tkr109/tasklane/controllers"
 	"github.com/tkr109/tasklane/jobs"
 	"github.com/tkr109/tasklane/repositories"
@@ -89,18 +90,18 @@ type api struct {
 }
 
 func newAPI(t *testing.T, cacheTTL time.Duration) *api {
-	return newAPIWithCeiling(t, cacheTTL, 0)
+	return newAPIWith(t, config.API{AuthCacheTTL: cacheTTL, MaxSchedulesPerTeam: 50})
 }
 
-// newAPIWithCeiling is newAPI with submits turned away once ceiling jobs wait.
-func newAPIWithCeiling(t *testing.T, cacheTTL time.Duration, ceiling int) *api {
+// newAPIWith is newAPI with the API settings that matter to a test.
+func newAPIWith(t *testing.T, cfg config.API) *api {
 	pool := testDB(t)
 	keys := repositories.NewKeys(pool)
-	auth := services.NewAuth(keys, cacheTTL)
+	auth := services.NewAuth(keys, cfg.AuthCacheTTL)
 	handler := New(
 		controllers.NewJobs(services.NewQueue(repositories.NewJobs(pool), jobs.Defaults()),
-			services.NewLimits(repositories.NewRateBuckets(pool), repositories.NewJobs(pool), ceiling)),
-		controllers.NewSchedules(services.NewSchedules(repositories.NewSchedules(pool), jobs.Defaults())),
+			services.NewLimits(repositories.NewRateBuckets(pool), repositories.NewJobs(pool), cfg.QueueCeiling)),
+		controllers.NewSchedules(services.NewSchedules(repositories.NewSchedules(pool), jobs.Defaults(), cfg.MaxSchedulesPerTeam)),
 		controllers.NewTeams(services.NewTeams(repositories.NewTeams(pool), keys, auth)),
 		auth, adminToken, pool.Ping,
 	)
@@ -517,7 +518,7 @@ func TestBadSubmitsDontSpendTokens(t *testing.T) {
 }
 
 func TestOverloadedQueueGets503(t *testing.T) {
-	a := newAPIWithCeiling(t, time.Minute, 5)
+	a := newAPIWith(t, config.API{AuthCacheTTL: time.Minute, QueueCeiling: 5})
 	_, key := a.createTeam("acme", "pro")
 	one := map[string]string{"type": "sleep"}
 
@@ -602,5 +603,49 @@ func TestSchedulesBelongToTheirTeam(t *testing.T) {
 	}
 	if code := a.call("GET", path, acme.Key, nil, nil); code != http.StatusNotFound {
 		t.Fatalf("get after delete: status %d, want 404", code)
+	}
+}
+
+func TestSchedulesPerTeamAreCapped(t *testing.T) {
+	a := newAPIWith(t, config.API{AuthCacheTTL: time.Minute, MaxSchedulesPerTeam: 3})
+	_, acme := a.createTeam("acme", "free")
+	_, globex := a.createTeam("globex", "free")
+	body := map[string]any{"cron": "@hourly", "type": "sleep"}
+
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		codes = map[int]int{}
+	)
+	for range 10 {
+		wg.Go(func() {
+			code := a.call("POST", "/api/schedules", acme.Key, body, nil)
+			mu.Lock()
+			codes[code]++
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	if codes[http.StatusCreated] != 3 || codes[http.StatusConflict] != 7 {
+		t.Fatalf("ten creates against a cap of 3 got %v, want 3 created and 7 conflicts", codes)
+	}
+	if code := a.call("POST", "/api/schedules", globex.Key, body, nil); code != http.StatusCreated {
+		t.Fatalf("another team's first schedule: status %d", code)
+	}
+
+	var list struct {
+		Schedules []struct {
+			ID int64 `json:"id"`
+		} `json:"schedules"`
+	}
+	if code := a.call("GET", "/api/schedules", acme.Key, nil, &list); code != http.StatusOK || len(list.Schedules) != 3 {
+		t.Fatalf("list: status %d, %d schedules", code, len(list.Schedules))
+	}
+	path := "/api/schedules/" + strconv.FormatInt(list.Schedules[0].ID, 10)
+	if code := a.call("DELETE", path, acme.Key, nil, nil); code != http.StatusNoContent {
+		t.Fatalf("delete: status %d", code)
+	}
+	if code := a.call("POST", "/api/schedules", acme.Key, body, nil); code != http.StatusCreated {
+		t.Fatalf("create after a delete: status %d, want 201", code)
 	}
 }
