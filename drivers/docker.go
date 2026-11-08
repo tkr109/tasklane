@@ -26,7 +26,7 @@ const apiVersion = "v1.41"
 const roleLabel = "tasklane.role"
 
 // Docker runs workers as containers, through the Docker Engine API on its unix
-// socket. It needs five plain HTTP calls, so it does without the Docker SDK.
+// socket. It needs six plain HTTP calls, so it does without the Docker SDK.
 type Docker struct {
 	http        *http.Client
 	cfg         config.Docker
