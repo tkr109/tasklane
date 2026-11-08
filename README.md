@@ -330,8 +330,8 @@ dead job groups, and the scaler's loop and leadership. The Docker driver is test
 fake daemon on a unix socket.
 
 The dashboard checks with `npm run lint` and `npm run build` in `web/`. CI runs `go vet`,
-`go test -race ./...` with the integration tests, and the dashboard's lint and build on every
-push.
+`go test -race ./...` with the integration tests, and the dashboard's lint and build on pushes
+to `main` and on pull requests.
 
 ## Design notes and trade-offs
 
