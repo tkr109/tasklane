@@ -65,14 +65,17 @@ func Webhook(secret string) Handler {
 		body := snippet(head)
 
 		code := resp.StatusCode
-		switch {
-		case code >= 200 && code < 300:
+		if code >= 200 && code < 300 {
 			return webhookResult{Status: code, Body: body}, nil
-		case code >= 500 || code == http.StatusTooManyRequests || code == http.StatusRequestTimeout:
-			return nil, fmt.Errorf("webhook: got %s: %s", resp.Status, body)
-		default:
-			return nil, Permanent(fmt.Errorf("webhook: got %s: %s", resp.Status, body))
 		}
+		err = fmt.Errorf("webhook: got %s", resp.Status)
+		if body != "" {
+			err = fmt.Errorf("%w: %s", err, body)
+		}
+		if code >= 500 || code == http.StatusTooManyRequests || code == http.StatusRequestTimeout {
+			return nil, err
+		}
+		return nil, Permanent(err)
 	}
 }
 
