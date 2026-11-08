@@ -11,7 +11,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/tkr109/tasklane/config"
+	"github.com/tkr109/tasklane/repositories"
 	"github.com/tkr109/tasklane/routes"
 )
 
@@ -59,10 +62,28 @@ func newLogger(cfg config.Config) *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stdout, opts))
 }
 
+func openDB(ctx context.Context, cfg config.Config) (*pgxpool.Pool, error) {
+	pool, err := repositories.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return nil, err
+	}
+	if err := repositories.Migrate(ctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
+}
+
 func runAPI(ctx context.Context, cfg config.Config) error {
+	pool, err := openDB(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           routes.New(),
+		Handler:           routes.New(pool.Ping),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -88,6 +109,12 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 }
 
 func runWorker(ctx context.Context, cfg config.Config) error {
+	pool, err := openDB(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
 	slog.Info("worker started")
 	<-ctx.Done()
 	slog.Info("worker stopped")

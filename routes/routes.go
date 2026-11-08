@@ -1,14 +1,15 @@
 package routes
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/tkr109/tasklane/controllers"
 	"github.com/tkr109/tasklane/middleware"
 )
 
-func New() http.Handler {
+func New(ping func(context.Context) error) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", controllers.Healthz)
+	mux.Handle("GET /healthz", controllers.Healthz(ping))
 	return middleware.Logging(mux)
 }
