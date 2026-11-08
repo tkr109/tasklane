@@ -33,6 +33,10 @@ type Worker struct {
 	ShutdownGrace     time.Duration
 	RetryBaseDelay    time.Duration
 	RetryMaxDelay     time.Duration
+	// A waiting job gains one priority level every AgingStep.
+	AgingStep time.Duration
+	// FairShareWindow is roughly how far back a team's served jobs count.
+	FairShareWindow time.Duration
 }
 
 func Load() (Config, error) {
@@ -55,6 +59,8 @@ func Load() (Config, error) {
 			ShutdownGrace:     l.duration("WORKER_SHUTDOWN_GRACE", 30*time.Second),
 			RetryBaseDelay:    l.duration("RETRY_BASE_DELAY", 2*time.Second),
 			RetryMaxDelay:     l.duration("RETRY_MAX_DELAY", 10*time.Minute),
+			AgingStep:         l.duration("PRIORITY_AGING_STEP", 30*time.Second),
+			FairShareWindow:   l.duration("FAIR_SHARE_WINDOW", time.Minute),
 		},
 	}
 	if err := cfg.LogLevel.UnmarshalText([]byte(l.str("LOG_LEVEL", "info"))); err != nil {
@@ -62,6 +68,12 @@ func Load() (Config, error) {
 	}
 	if cfg.Worker.Concurrency < 1 {
 		l.fail("WORKER_CONCURRENCY", fmt.Errorf("must be at least 1"))
+	}
+	if cfg.Worker.AgingStep <= 0 {
+		l.fail("PRIORITY_AGING_STEP", fmt.Errorf("must be positive"))
+	}
+	if cfg.Worker.FairShareWindow <= 0 {
+		l.fail("FAIR_SHARE_WINDOW", fmt.Errorf("must be positive"))
 	}
 	return cfg, l.err
 }
