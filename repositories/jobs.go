@@ -216,6 +216,14 @@ func (r *Jobs) Backlog(ctx context.Context, types []string) ([]models.Backlog, e
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.Backlog])
 }
 
+// CountRunnable counts the jobs of every team that could start right now.
+func (r *Jobs) CountRunnable(ctx context.Context) (int, error) {
+	var n int
+	err := r.db.QueryRow(ctx,
+		`select count(*) from jobs where status in ('queued', 'failed') and run_at <= now()`).Scan(&n)
+	return n, err
+}
+
 // Grab claims the longest-waiting runnable job at one team's priority level, as
 // long as the team is still under its worker cap, and counts it as served. SKIP
 // LOCKED lets many workers grab at once without waiting on, or double claiming,
