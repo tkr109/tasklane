@@ -41,10 +41,15 @@ services:
     environment:
       DATABASE_URL: postgres://tasklane:tasklane@postgres:5432/tasklane?sslmode=disable
       LOG_FORMAT: json
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-whsec_localdev}
     stop_grace_period: 40s
     depends_on:
       postgres:
         condition: service_healthy
+
+  # A webhook target for demos: /post echoes the request back, /status/503 fails.
+  httpbin:
+    image: mccutchen/go-httpbin:v2.15.0
 
 volumes:
   pgdata:
