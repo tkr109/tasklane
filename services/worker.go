@@ -126,7 +126,12 @@ func (w *Worker) loop(ctx, jobCtx context.Context) {
 		}
 
 		w.running.Go(func() {
-			defer func() { <-slots }()
+			defer func() {
+				<-slots
+				// The job also freed a slot under its team's worker cap, and nothing
+				// else announces that, so look for work right away.
+				w.nudge()
+			}()
 			w.execute(jobCtx, job)
 		})
 	}
@@ -136,12 +141,7 @@ func (w *Worker) loop(ctx, jobCtx context.Context) {
 // start right away instead of on the next poll.
 func (w *Worker) listen(ctx context.Context) {
 	for {
-		err := w.repo.ListenQueued(ctx, func() {
-			select {
-			case w.wake <- struct{}{}:
-			default:
-			}
-		})
+		err := w.repo.ListenQueued(ctx, w.nudge)
 		if ctx.Err() != nil {
 			return
 		}
@@ -151,6 +151,14 @@ func (w *Worker) listen(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// nudge wakes the grab loop if it is waiting for work.
+func (w *Worker) nudge() {
+	select {
+	case w.wake <- struct{}{}:
+	default:
 	}
 }
 
