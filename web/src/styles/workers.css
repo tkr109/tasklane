@@ -72,6 +72,45 @@
   color: var(--muted);
 }
 
+.running-jobs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.job-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: var(--track);
+  color: var(--muted);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.job-chip:hover {
+  color: var(--text);
+}
+
+.chip-bar {
+  width: 28px;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--running) 18%, transparent);
+  overflow: hidden;
+}
+
+.chip-bar i {
+  display: block;
+  height: 100%;
+  background: var(--running);
+  transition: width 0.4s ease-out;
+}
+
 .tbl tr.leaving td {
   opacity: 0.55;
 }

@@ -1,31 +1,41 @@
 import { Link } from 'react-router'
 import type { Worker } from '../../api/types'
-import { formatDuration, formatNumber } from '../../lib/format'
+import { formatDuration, formatNumber, plural } from '../../lib/format'
 
 // Workers beat every few seconds; one that's quiet for this long is worth a look.
 const LATE_HEARTBEAT_SECONDS = 10
 
 const byHost = (a: Worker, b: Worker) => a.host.localeCompare(b.host, 'en', { numeric: true })
 
-function CurrentJob({ worker }: { worker: Worker }) {
+// Enough chips for a typical worker; the rest are summed up.
+const MAX_CHIPS = 4
+
+function RunningJobs({ worker }: { worker: Worker }) {
+  const jobs = worker.running_jobs
   if (worker.state === 'starting') return <span className="faint">container starting</span>
-  if (worker.current_job) {
+  if (jobs.length === 0) {
     return (
-      <>
-        <Link className="mono" to={`/jobs/${worker.current_job.id}`}>
-          {worker.current_job.id}
-        </Link>{' '}
-        <span className="faint mono">{worker.current_job.type}</span>
-      </>
+      <span className="faint">{worker.state === 'draining' ? 'finishing, takes no new jobs' : 'idle, waiting on notify'}</span>
     )
   }
+  const shown = [...jobs].sort((a, b) => a.id - b.id).slice(0, MAX_CHIPS)
   return (
-    <span className="faint">{worker.state === 'draining' ? 'finishing, takes no new jobs' : 'idle, waiting on notify'}</span>
+    <div className="running-jobs">
+      <span className="num">{plural(jobs.length, 'job')}</span>
+      {shown.map((job) => (
+        <Link key={job.id} className="job-chip" to={`/jobs/${job.id}`} title={`Job ${job.id}, ${job.progress}%`}>
+          <span className="mono">{job.type}</span>
+          <span className="chip-bar">
+            <i style={{ width: `${Math.min(100, job.progress)}%` }} />
+          </span>
+        </Link>
+      ))}
+      {jobs.length > shown.length && <span className="faint">+{jobs.length - shown.length} more</span>}
+    </div>
   )
 }
 
-function Heartbeat({ lastSeen, now }: { lastSeen: string | null; now: number }) {
-  if (!lastSeen) return <span className="faint">none yet</span>
+function Heartbeat({ lastSeen, now }: { lastSeen: string; now: number }) {
   const age = Math.max(0, (now - new Date(lastSeen).getTime()) / 1000)
   return (
     <span className={age > LATE_HEARTBEAT_SECONDS ? 'heartbeat late' : 'heartbeat'}>
@@ -44,7 +54,7 @@ export function WorkersTable({ workers, now }: { workers: Worker[]; now: number 
             <th>Worker</th>
             <th>Container</th>
             <th>State</th>
-            <th>Current job</th>
+            <th>Running</th>
             <th>Heartbeat</th>
             <th>Jobs done</th>
             <th>Up for</th>
@@ -65,7 +75,7 @@ export function WorkersTable({ workers, now }: { workers: Worker[]; now: number 
                   </span>
                 </td>
                 <td>
-                  <CurrentJob worker={w} />
+                  <RunningJobs worker={w} />
                 </td>
                 <td>
                   <Heartbeat lastSeen={w.last_seen_at} now={now} />

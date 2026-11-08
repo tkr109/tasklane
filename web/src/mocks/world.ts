@@ -852,18 +852,19 @@ export class World {
   }
 
   private workerList(): Worker[] {
-    return this.workers.map((w) => {
-      const current = this.runningOn(w.id).at(-1)
-      return {
-        id: w.id,
-        host: w.host,
-        state: w.state,
-        started_at: iso(w.startedAt),
-        last_seen_at: w.state === 'starting' ? null : iso(w.lastSeen),
-        current_job: current ? { id: current.id, type: current.type } : null,
-        jobs_done: Math.round(w.done),
-      }
-    })
+    return this.workers.map((w) => this.toWorker(w))
+  }
+
+  private toWorker(w: MockWorker): Worker {
+    return {
+      id: w.id,
+      host: w.host,
+      state: w.state,
+      started_at: iso(w.startedAt),
+      last_seen_at: iso(w.lastSeen),
+      jobs_done: Math.round(w.done),
+      running_jobs: this.runningOn(w.id).map((job) => ({ id: job.id, type: job.type, progress: Math.floor(job.progress) })),
+    }
   }
 
   private shareOf(team: MockTeam) {

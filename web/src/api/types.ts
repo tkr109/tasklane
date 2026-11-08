@@ -103,14 +103,21 @@ export interface Stats {
 
 export type WorkerState = 'starting' | 'running' | 'draining'
 
+export interface RunningJob {
+  id: number
+  type: string
+  progress: number
+}
+
 export interface Worker {
   id: string
   host: string
   state: WorkerState
   started_at: string
-  last_seen_at: string | null
-  current_job: { id: number; type: string } | null
+  last_seen_at: string
   jobs_done: number
+  // A worker runs several jobs at once.
+  running_jobs: RunningJob[]
 }
 
 export interface ScalerDecision {
