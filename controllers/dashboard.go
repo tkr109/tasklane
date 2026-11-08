@@ -1,9 +1,11 @@
 package controllers
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
+	"github.com/tkr109/tasklane/models"
 	"github.com/tkr109/tasklane/services"
 )
 
@@ -31,6 +33,27 @@ func (h *Dashboard) Job(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, jobDetail{Job: job, Timeline: events})
+}
+
+func (h *Dashboard) CancelJob(w http.ResponseWriter, r *http.Request) {
+	h.changeJob(w, r, h.queue.CancelAny)
+}
+
+func (h *Dashboard) RetryJob(w http.ResponseWriter, r *http.Request) {
+	h.changeJob(w, r, h.queue.RetryAny)
+}
+
+func (h *Dashboard) changeJob(w http.ResponseWriter, r *http.Request, change func(context.Context, int64) (models.Job, error)) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	job, err := change(r.Context(), id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
 }
 
 func (h *Dashboard) Stats(w http.ResponseWriter, r *http.Request) {

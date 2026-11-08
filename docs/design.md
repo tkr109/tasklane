@@ -503,6 +503,8 @@ GET    /api/teams/{id}/keys                    admin
 POST   /api/teams/{id}/keys                    admin: returns the full key once
 POST   /api/teams/{id}/keys/{key}/revoke       admin
 GET    /api/admin/jobs/{id}                    admin: any team's job, detail + timeline
+POST   /api/admin/jobs/{id}/cancel             admin: cancel any team's job
+POST   /api/admin/jobs/{id}/retry              admin: retry any team's job
 GET    /api/stats                              admin: counts, rates and the last 150 samples
 GET    /api/workers                            admin: live workers, their jobs, scaler decisions
 GET    /api/dead-groups                        admin: dead jobs grouped by type and error

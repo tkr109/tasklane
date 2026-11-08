@@ -260,6 +260,38 @@ func TestTheAdminReadsAnyTeamsJob(t *testing.T) {
 	}
 }
 
+func TestTheAdminCancelsAndRetriesAnyTeamsJob(t *testing.T) {
+	a := newAPI(t, time.Minute)
+	acme, acmeKey := a.createTeam("acme", "free")
+	_, otherKey := a.createTeam("globex", "pro")
+	path := "/api/admin/jobs/" + strconv.FormatInt(a.submit(acmeKey.Key, map[string]string{"type": "sleep"}), 10)
+
+	var job struct {
+		TeamID int64  `json:"team_id"`
+		Status string `json:"status"`
+	}
+	if code := a.call("POST", path+"/cancel", otherKey.Key, nil, nil); code != http.StatusUnauthorized {
+		t.Errorf("a team key cancelling through the admin route: status %d, want 401", code)
+	}
+	if code := a.call("POST", path+"/cancel", adminToken, nil, &job); code != http.StatusOK || job.Status != "cancelled" || job.TeamID != acme.ID {
+		t.Fatalf("admin cancel: status %d, job %+v", code, job)
+	}
+	if code := a.call("POST", path+"/cancel", adminToken, nil, nil); code != http.StatusConflict {
+		t.Errorf("cancelling a cancelled job: status %d, want 409", code)
+	}
+	if code := a.call("POST", path+"/retry", adminToken, nil, &job); code != http.StatusOK || job.Status != "queued" {
+		t.Fatalf("admin retry: status %d, job %+v", code, job)
+	}
+	if code := a.call("POST", path+"/retry", adminToken, nil, nil); code != http.StatusConflict {
+		t.Errorf("retrying a queued job: status %d, want 409", code)
+	}
+	for _, action := range []string{"cancel", "retry"} {
+		if code := a.call("POST", "/api/admin/jobs/999999/"+action, adminToken, nil, nil); code != http.StatusNotFound {
+			t.Errorf("%s of a missing job: status %d, want 404", action, code)
+		}
+	}
+}
+
 func TestBadAndRevokedKeysGet401(t *testing.T) {
 	const ttl = 300 * time.Millisecond
 	a := newAPI(t, time.Minute)

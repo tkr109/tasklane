@@ -38,6 +38,8 @@ func New(jobs *controllers.Jobs, schedules *controllers.Schedules, teams *contro
 	mux.Handle("POST /api/teams/{id}/keys/{key}/revoke", admin(teams.RevokeKey))
 
 	mux.Handle("GET /api/admin/jobs/{id}", admin(dashboard.Job))
+	mux.Handle("POST /api/admin/jobs/{id}/cancel", admin(dashboard.CancelJob))
+	mux.Handle("POST /api/admin/jobs/{id}/retry", admin(dashboard.RetryJob))
 	mux.Handle("GET /api/stats", admin(dashboard.Stats))
 	mux.Handle("GET /api/workers", admin(dashboard.Workers))
 	mux.Handle("GET /api/dead-groups", admin(dashboard.DeadGroups))

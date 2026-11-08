@@ -212,6 +212,32 @@ func (q *Queue) Retry(ctx context.Context, teamID, id int64) (models.Job, error)
 	return job, q.explainMiss(ctx, teamID, id, err, "retry")
 }
 
+// CancelAny is Cancel for a job of any team. Only the admin dashboard may use it.
+func (q *Queue) CancelAny(ctx context.Context, id int64) (models.Job, error) {
+	teamID, err := q.teamOf(ctx, id)
+	if err != nil {
+		return models.Job{}, err
+	}
+	return q.Cancel(ctx, teamID, id)
+}
+
+// RetryAny is Retry for a job of any team. Only the admin dashboard may use it.
+func (q *Queue) RetryAny(ctx context.Context, id int64) (models.Job, error) {
+	teamID, err := q.teamOf(ctx, id)
+	if err != nil {
+		return models.Job{}, err
+	}
+	return q.Retry(ctx, teamID, id)
+}
+
+func (q *Queue) teamOf(ctx context.Context, id int64) (int64, error) {
+	job, err := q.repo.Find(ctx, id)
+	if errors.Is(err, repositories.ErrNotFound) {
+		return 0, errJobNotFound
+	}
+	return job.TeamID, err
+}
+
 // explainMiss turns a state change that matched no row into either "not found"
 // or "the job is in the wrong state for that".
 func (q *Queue) explainMiss(ctx context.Context, teamID, id int64, err error, action string) error {
