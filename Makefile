@@ -4,12 +4,16 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 export ADMIN_TOKEN ?= dev-admin-token
 export DEV_API_KEY ?= tk_live_localdev
 
-.PHONY: up down db test vet run-api run-worker
+.PHONY: up down db test vet run-api run-worker run-scaler
 
 up:
 	$(COMPOSE) up -d --build
 
+# The scaler's workers aren't compose's own. Stop the scaler first so it doesn't
+# replace them, then remove them so the network can go.
 down:
+	$(COMPOSE) stop scaler
+	@ids=$$(docker ps -aq --filter label=tasklane.role=worker); [ -z "$$ids" ] || docker rm -f $$ids
 	$(COMPOSE) down
 
 db:
@@ -26,3 +30,7 @@ run-api: db
 
 run-worker: db
 	go run . worker
+
+# Outside Docker the scaler only logs what it would do.
+run-scaler: db
+	go run . scaler

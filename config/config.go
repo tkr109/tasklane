@@ -86,7 +86,8 @@ type Scaler struct {
 
 // Docker is how the docker driver sets up the worker containers it starts.
 type Docker struct {
-	Socket  string
+	Socket string
+	// Image is what compose builds for the scaler; workers run the same binary.
 	Image   string
 	Network string
 	// Volumes are binds such as "tasklane_jobdata:/data".
@@ -145,7 +146,7 @@ func Load() (Config, error) {
 			Driver:        l.str("SCALER_DRIVER", "noop"),
 			Docker: Docker{
 				Socket:  l.str("DOCKER_SOCKET", "/var/run/docker.sock"),
-				Image:   l.str("WORKER_IMAGE", "tasklane:dev"),
+				Image:   l.str("WORKER_IMAGE", "tasklane-scaler"),
 				Network: l.str("WORKER_NETWORK", ""),
 				Volumes: l.list("WORKER_VOLUMES", ""),
 				Env:     l.env("WORKER_ENV", workerEnv),

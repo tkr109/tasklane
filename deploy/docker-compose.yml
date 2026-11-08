@@ -1,5 +1,16 @@
 name: tasklane
 
+# What the scaler passes on to its workers, with the rest of WORKER_ENV.
+x-worker-env: &worker-env
+  DATABASE_URL: postgres://tasklane:tasklane@postgres:5432/tasklane?sslmode=disable
+  LOG_FORMAT: json
+  WEBHOOK_SECRET: ${WEBHOOK_SECRET:-whsec_localdev}
+  DATA_DIR: /data
+  SMTP_HOST: mailpit
+  # One job at a time, so a plan's worker cap is a number of containers and each
+  # one the scaler adds is another job running.
+  WORKER_CONCURRENCY: "1"
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -33,20 +44,25 @@ services:
       postgres:
         condition: service_healthy
 
-  worker:
+  # The scaler starts and stops the worker containers itself, from its own image
+  # and on this network. make down removes them.
+  scaler:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    command: ["worker"]
+    command: ["scaler"]
+    # Docker's socket is only open to root, and whoever can use it is root anyway.
+    user: root
     environment:
-      DATABASE_URL: postgres://tasklane:tasklane@postgres:5432/tasklane?sslmode=disable
-      LOG_FORMAT: json
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-whsec_localdev}
-      DATA_DIR: /data
-      SMTP_HOST: mailpit
+      <<: *worker-env
+      SCALER_DRIVER: docker
+      WORKER_IMAGE: tasklane-scaler
+      WORKER_NETWORK: tasklane_default
+      WORKER_VOLUMES: tasklane_jobdata:/data
     volumes:
-      - jobdata:/data
-    stop_grace_period: 40s
+      - /var/run/docker.sock:/var/run/docker.sock
+    # On the way out it waits for the workers it is still draining.
+    stop_grace_period: 50s
     depends_on:
       postgres:
         condition: service_healthy
