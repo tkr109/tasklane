@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -12,6 +13,10 @@ import (
 
 	"github.com/tkr109/tasklane/migrations"
 )
+
+// ErrNotFound means no row matched, either because it doesn't exist or because
+// it wasn't in a state the query accepts.
+var ErrNotFound = errors.New("not found")
 
 func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	pool, err := pgxpool.New(ctx, url)
