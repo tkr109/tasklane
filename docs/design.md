@@ -71,13 +71,27 @@ There is no `utils/` folder; a helper lives next to the code that uses it.
   run_at, lease_until, locked_by, idempotency_key, progress, last_error, timestamps
 - `job_events`: job_id, kind, message, at (the timeline)
 - `schedules`: team_id, cron expression, job template, next_run_at
-- `workers`: id, host, started_at, last_seen_at (heartbeat), current job
+- `workers`: id, host, started_at, last_seen_at (heartbeat). There is no current-job column:
+  a worker's running jobs are the ones whose `jobs.locked_by` is its id.
 - `rate_buckets`: key (team or job type), tokens, updated_at
 
 Redis can come back later behind the same service interfaces if load tests show Postgres is
 the bottleneck for rate limits or events.
 
 Job statuses: `queued -> running -> succeeded | failed -> dead`. `cancelled` from queued.
+`failed` means "this attempt failed and the job is waiting out its backoff"; once `run_at`
+passes it is runnable again, just like `queued`. `dead` is the final failure.
+
+## Plans
+
+| Plan       | Share weight | Worker cap | Jobs per minute | Burst  |
+|------------|-------------:|-----------:|----------------:|-------:|
+| Free       | 1            | 2          | 100             | 200    |
+| Pro        | 3            | 6          | 1,000           | 2,000  |
+| Enterprise | 10           | 10         | 10,000          | 20,000 |
+
+The worker cap is the most jobs a team can have running at once. Burst is twice the
+per-minute rate.
 
 ## Core behaviour
 
@@ -87,13 +101,16 @@ Job statuses: `queued -> running -> succeeded | failed -> dead`. `cancelled` fro
 (a slow poll stays as a fallback).
 
 **Leases and crashes.** A running worker extends its lease every few seconds. If a worker
-dies, its lease runs out and a reaper puts the job back to `queued`. No job is lost.
+dies, its lease runs out and a reaper puts the job back to `queued`. No job is lost. The
+reaper also deletes worker rows that missed 10 heartbeats in a row.
 
 **Duplicates.** Submits may carry an `Idempotency-Key` header. A unique index on
 `(team_id, idempotency_key)` means a repeat returns the original job instead of a new one.
 
-**Retries.** On failure: `run_at = now() + backoff(attempt)` with exponential growth and
-jitter. After `max_attempts` the job goes to `dead`. The dashboard can retry dead jobs.
+**Retries.** An attempt is counted when a worker grabs the job, so a crash mid-job still
+uses one up. On failure: `run_at = now() + backoff(attempt)` with exponential growth and
+jitter, and the job sits in `failed` until then. After `max_attempts` the job goes to
+`dead`. The dashboard can retry dead jobs.
 
 **Timeouts.** Each job type has a time limit. A job past it is cancelled and counts as a
 failure.
@@ -104,7 +121,7 @@ a grace period), then exits. Anything unfinished falls back via the lease.
 **Priorities.** 0 (low) to 9 (urgent). Effective priority grows with wait time (aging) so low
 jobs still run.
 
-**Fairness.** Teams take turns. Each plan has a share weight (Free 1, Pro 3, Enterprise 10).
+**Fairness.** Teams take turns. Each plan has a share weight (see Plans).
 The grab query picks the team that is furthest behind its fair share, then the best job
 inside that team. A team at its plan's worker cap is skipped.
 
