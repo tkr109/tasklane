@@ -274,3 +274,26 @@ func (r *Jobs) finish(ctx context.Context, query string, args ...any) error {
 	}
 	return nil
 }
+
+// ReapExpired takes back running jobs whose lease ran out because their worker
+// died or stalled. They return to the queue, or go dead if that was the last try.
+func (r *Jobs) ReapExpired(ctx context.Context) (int64, error) {
+	tag, err := r.db.Exec(ctx, `
+		with expired as (
+			select id, locked_by from jobs
+			where status = 'running' and lease_until < now()
+			for update skip locked
+		), reaped as (
+			update jobs j
+			set status = case when j.attempts >= j.max_attempts then 'dead' else 'queued' end,
+				finished_at = case when j.attempts >= j.max_attempts then now() end,
+				last_error = 'lease expired', lease_until = null, locked_by = null, updated_at = now()
+			from expired
+			where j.id = expired.id
+			returning j.id, j.status, expired.locked_by
+		)
+		insert into job_events (job_id, kind, message)
+		select id, 'lease_expired', format('%s stopped renewing the lease, job is %s', locked_by, status)
+		from reaped`)
+	return tag.RowsAffected(), err
+}

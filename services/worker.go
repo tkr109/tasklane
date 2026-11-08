@@ -50,6 +50,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	log := slog.With("worker", w.id)
 	log.Info("worker started", "concurrency", w.cfg.Concurrency, "types", w.types.Names())
 
+	go w.reap(ctx)
 	w.loop(ctx, context.WithoutCancel(ctx))
 
 	log.Info("worker draining")
