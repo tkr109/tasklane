@@ -15,11 +15,12 @@ const maxBodyBytes = 1 << 20
 // Jobs serves the API that apps call with their key. Every handler works on the
 // team the auth middleware resolved.
 type Jobs struct {
-	queue *services.Queue
+	queue  *services.Queue
+	limits *services.Limits
 }
 
-func NewJobs(queue *services.Queue) *Jobs {
-	return &Jobs{queue: queue}
+func NewJobs(queue *services.Queue, limits *services.Limits) *Jobs {
+	return &Jobs{queue: queue, limits: limits}
 }
 
 type jobRequest struct {
@@ -48,6 +49,9 @@ func (h *Jobs) Submit(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	if !h.admit(w, r, 1) {
+		return
+	}
 	job, created, err := h.queue.Submit(r.Context(), teamID(r), req.spec(), r.Header.Get("Idempotency-Key"))
 	if err != nil {
 		writeServiceError(w, err)
@@ -70,6 +74,9 @@ func (h *Jobs) SubmitBatch(w http.ResponseWriter, r *http.Request) {
 	specs := make([]services.JobSpec, len(req.Jobs))
 	for i, j := range req.Jobs {
 		specs[i] = j.spec()
+	}
+	if !h.admit(w, r, len(specs)) {
+		return
 	}
 	created, err := h.queue.SubmitBatch(r.Context(), teamID(r), specs)
 	if err != nil {
@@ -148,6 +155,21 @@ func (h *Jobs) Retry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
+}
+
+// admit charges n jobs to the team's rate limit and sets the rate limit headers.
+// When the submit can't go ahead it writes the refusal and returns false.
+func (h *Jobs) admit(w http.ResponseWriter, r *http.Request, n int) bool {
+	quota, err := h.limits.Admit(r.Context(), services.TeamFrom(r.Context()), n)
+	if quota.Limit > 0 {
+		w.Header().Set("X-RateLimit-Limit", strconv.Itoa(quota.Limit))
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(quota.Remaining))
+	}
+	if err != nil {
+		writeServiceError(w, err)
+		return false
+	}
+	return true
 }
 
 func teamID(r *http.Request) int64 {

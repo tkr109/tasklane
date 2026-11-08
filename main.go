@@ -97,9 +97,11 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 		slog.Warn("ADMIN_TOKEN is not set, admin endpoints are off")
 	}
 
-	queue := services.NewQueue(repositories.NewJobs(pool), jobs.Defaults())
+	jobsRepo := repositories.NewJobs(pool)
+	queue := services.NewQueue(jobsRepo, jobs.Defaults())
+	limits := services.NewLimits(repositories.NewRateBuckets(pool), jobsRepo, cfg.API.QueueCeiling)
 	handler := routes.New(
-		controllers.NewJobs(queue),
+		controllers.NewJobs(queue, limits),
 		controllers.NewTeams(teams),
 		auth,
 		cfg.API.AdminToken,

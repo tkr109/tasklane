@@ -93,7 +93,8 @@ func newAPI(t *testing.T, cacheTTL time.Duration) *api {
 	keys := repositories.NewKeys(pool)
 	auth := services.NewAuth(keys, cacheTTL)
 	handler := New(
-		controllers.NewJobs(services.NewQueue(repositories.NewJobs(pool), jobs.Defaults())),
+		controllers.NewJobs(services.NewQueue(repositories.NewJobs(pool), jobs.Defaults()),
+			services.NewLimits(repositories.NewRateBuckets(pool), repositories.NewJobs(pool), 0)),
 		controllers.NewTeams(services.NewTeams(repositories.NewTeams(pool), keys, auth)),
 		auth, adminToken, pool.Ping,
 	)
@@ -331,7 +332,7 @@ func TestAdminRoutes(t *testing.T) {
 		t.Fatalf("teams = %+v", teams.Teams)
 	}
 
-	off := httptest.NewServer(New(controllers.NewJobs(nil), controllers.NewTeams(nil), nil, "", nil))
+	off := httptest.NewServer(New(controllers.NewJobs(nil, nil), controllers.NewTeams(nil), nil, "", nil))
 	defer off.Close()
 	resp, err := http.Get(off.URL + "/api/teams")
 	if err != nil {
