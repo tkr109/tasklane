@@ -65,7 +65,7 @@ func testDB(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("start postgres: %v", pgErr)
 	}
 
-	// Truncating skips the trigger that counts running jobs, so reset the counts too.
+	// The default team and its team_usage row stay, so zero its fair share count.
 	if _, err := pgPool.Exec(context.Background(), `
 		truncate jobs, job_events, workers, rate_buckets, schedules, scaler_decisions, scaler_status restart identity;
 		delete from teams where name <> 'default';
