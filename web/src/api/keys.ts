@@ -12,4 +12,5 @@ export const queryKeys = {
   teamRates: ['team-rates'] as const,
   deadGroups: ['dead-groups'] as const,
   deadGroupJobs: (id: string) => ['dead-groups', id, 'jobs'] as const,
+  schedules: ['schedules'] as const,
 }

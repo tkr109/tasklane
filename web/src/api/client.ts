@@ -31,6 +31,7 @@ function client(token: string) {
     get: <T>(path: string) => request<T>(token, 'GET', path),
     post: <T>(path: string, body?: unknown) => request<T>(token, 'POST', path, body),
     put: <T>(path: string, body: unknown) => request<T>(token, 'PUT', path, body),
+    del: (path: string) => request<null>(token, 'DELETE', path),
   }
 }
 

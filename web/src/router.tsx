@@ -27,6 +27,11 @@ export const router = createBrowserRouter([
         lazy: async () => ({ Component: (await import('./pages/job/JobDetailPage')).JobDetailPage }),
       },
       {
+        path: 'schedules',
+        handle: handle('Schedules'),
+        lazy: async () => ({ Component: (await import('./pages/schedules/SchedulesPage')).SchedulesPage }),
+      },
+      {
         path: 'workers',
         handle: handle('Workers'),
         lazy: async () => ({ Component: (await import('./pages/workers/WorkersPage')).WorkersPage }),

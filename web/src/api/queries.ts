@@ -2,6 +2,7 @@ import { queryOptions } from '@tanstack/react-query'
 import { getDeadGroupJobs, getDeadGroups } from './dead'
 import { getJob } from './jobs'
 import { queryKeys } from './keys'
+import { getSchedules } from './schedules'
 import { getStats, getWorkers } from './stats'
 import { getKeys, getPlans, getTeams } from './teams'
 
@@ -20,5 +21,7 @@ export const deadGroupsQuery = queryOptions({ queryKey: queryKeys.deadGroups, qu
 
 export const deadGroupJobsQuery = (groupId: string) =>
   queryOptions({ queryKey: queryKeys.deadGroupJobs(groupId), queryFn: () => getDeadGroupJobs(groupId) })
+
+export const schedulesQuery = queryOptions({ queryKey: queryKeys.schedules, queryFn: getSchedules })
 
 export const jobQuery = (id: number) => queryOptions({ queryKey: queryKeys.job(id), queryFn: () => getJob(id) })

@@ -57,6 +57,15 @@ export function TeamsIcon(props: IconProps) {
   )
 }
 
+export function SchedulesIcon(props: IconProps) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" {...stroke} strokeLinecap="round" {...props}>
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 4.5V8l2.3 1.5" />
+    </svg>
+  )
+}
+
 export function DeadIcon(props: IconProps) {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" {...stroke} strokeLinecap="round" {...props}>
