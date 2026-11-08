@@ -46,10 +46,6 @@ func NewWorker(repo *repositories.Jobs, workers *repositories.Workers, types job
 	}
 }
 
-func (w *Worker) ID() string {
-	return w.id
-}
-
 // Run pulls and runs jobs until ctx is cancelled. It then stops grabbing and gives
 // running jobs the shutdown grace period to finish. Whatever is still running
 // after that is abandoned, and the reaper requeues it once the lease runs out.
