@@ -49,6 +49,7 @@ tasklane/
 ├── middleware/        # API key auth, request logging
 ├── services/          # business logic: queue, fairness, scheduler, scaler, events
 ├── repositories/      # SQL queries, one file per table group
+├── drivers/           # how the scaler starts and stops workers: docker, noop
 ├── models/            # plain data types (Job, Team, Plan, ApiKey...)
 ├── jobs/              # the real job handlers: webhook, image, email
 ├── migrations/        # SQL migration files
@@ -58,7 +59,8 @@ tasklane/
 └── docs/
 ```
 
-Import direction is one way only: `controllers -> services -> repositories -> models`.
+Import direction is one way only: `controllers -> services -> repositories -> models`, with
+`drivers` beside `repositories` as the other way services reach outside the process.
 `models` imports nothing from the project. This keeps Go's no-import-cycles rule happy.
 There is no `utils/` folder; a helper lives next to the code that uses it.
 
@@ -76,12 +78,15 @@ There is no `utils/` folder; a helper lives next to the code that uses it.
 - `job_events`: job_id, kind, message, at (the timeline)
 - `schedules`: team_id, cron expression, timezone, job template (type, payload, priority,
   max_attempts), enabled, next_run_at, last_run_at
-- `workers`: id, host, state (running or draining), started_at, last_seen_at (heartbeat),
-  jobs_done (sent with each heartbeat). There is no current-job column: a worker's running
-  jobs are the ones whose `jobs.locked_by` is its id.
+- `workers`: id, host, state (starting, running or draining), started_at, last_seen_at
+  (heartbeat), jobs_done (sent with each heartbeat). There is no current-job column: a
+  worker's running jobs are the ones whose `jobs.locked_by` is its id.
 - `team_usage`: team_id, running (jobs running now), served (a decaying count of jobs
   started), served_at. Used for fair share.
 - `rate_buckets`: key (`team:<id>` or `type:<name>`), tokens, updated_at
+- `scaler_decisions`: at, action (up, down, hold), from_workers, to_workers, reason; the
+  latest 200
+- `scaler_status`: one row, the status the leading scaler last reported, as JSON
 
 Redis can come back later behind the same service interfaces if load tests show Postgres is
 the bottleneck for rate limits or events.
@@ -206,7 +211,7 @@ spent from in one atomic upsert (`INSERT ... ON CONFLICT DO UPDATE ... WHERE` en
    i.e. the burst) and `X-RateLimit-Remaining` (whole tokens left). The check sits in the
    jobs controller rather than a middleware because the cost depends on the batch size.
    The teams admin list shows `usage.jobs_last_minute` next to the plan's jobs per minute.
-2. **Outgoing.** `TYPE_RATE_LIMITS` (default `email=10/s,webhook=200/s`) gives a type a
+2. **Outgoing.** `TYPE_RATE_LIMITS` (default `email.send=10/s,webhook=200/s`) gives a type a
    bucket shared by all workers, with a burst of a tenth of a second's worth (at least 1).
    After a grab, a job of a limited type needs a token. Without one it goes straight back to
    `queued` until the next token is due, with its attempt and its team's fair share turn
@@ -251,15 +256,90 @@ missed tick.
 
 ## Autoscaling
 
-The scaler loop runs every few seconds:
+`tasklane scaler` keeps the number of worker containers in step with the queue. Every scaler
+competes for an advisory lock on a connection of its own, as the schedulers do, and only the
+holder acts. It checks that connection before each round, so one that lost its session stops
+acting before another takes over.
 
-- Reads queued count, oldest wait time, and running workers.
-- Ignores jobs that are only waiting on an outgoing rate limit (more workers won't help).
-- Wants `ceil(runnable / jobs_per_worker)` workers, clamped to `[min, max]`.
-- Scales up right away, scales down only after a cool-down, one step at a time.
-- Starts and stops worker containers through the Docker Engine API.
+**Each round** (`SCALER_INTERVAL`, 1s) the leader:
 
-Every decision is logged and published so the dashboard can chart it.
+1. Lists its workers through the driver and their rows in `workers`. Containers that exited
+   or died are removed, with any row they left; a crashed worker's jobs come back when their
+   leases run out. Workers that are draining, whoever told them to stop, don't count. The
+   rest, running or still starting, are the current count.
+2. Measures demand in one query: runnable jobs, the oldest wait, and slots, which is the sum
+   over teams of `min(waiting + running, plan cap)`. Types that a rate limit held back in the
+   last 10s (`HeldByLimit`) are left out, as more workers wouldn't start them any sooner.
+3. Decides. The target is `ceil(runnable / JOBS_PER_WORKER)`, at most
+   `ceil(slots / WORKER_CONCURRENCY)`, clamped to `[SCALER_MIN, SCALER_MAX]` (2 and 10).
+   Above the current count, it starts the difference at once. Below it, it records a `hold`
+   and starts a cool-down (`SCALER_COOLDOWN`, 20s); if it still wants fewer when that ends,
+   it stops one worker every `SCALER_STEP_DOWN` (3s) until it doesn't. Wanting as many as it
+   has ends a cool-down, so a queue that fills and empties doesn't flap. Times are compared
+   with half a round of slack, or a round that ran a few ms late would push a 3s step to 4s.
+4. Stores an `up`, `down` or `hold` in `scaler_decisions`, publishes it as a `decision` event,
+   and writes its status row, which the overview and the `stats` event carry as `scaler`
+   (all zeros until a scaler has reported).
+
+**Why caps bound the target.** A team can't run more jobs at once than its plan's cap, however
+many workers there are. With one enterprise team flooding (cap 10) and workers running four
+jobs each, three workers fill the cap and seven more would sit idle, so the backlog says how
+many workers are wanted and the caps say how many are useful. Compose runs workers with
+`WORKER_CONCURRENCY=1`: a plan's worker cap is then a number of containers, and each one the
+scaler adds is another job running. The maths is the same at the default of four, with fewer
+containers.
+
+**`JOBS_PER_WORKER` is 500.** Two workers take the everyday trickle; a 10k flood asks for 20,
+gets 10, and as it drains below 4,500 the target falls and the cool-down starts. The pool
+then steps down soon after the queue empties rather than a full cool-down later.
+
+**Starting and stopping.** The scaler names a worker `tasklane-worker-<hex>` and adds its row
+as `starting` before starting it; the container gets the name as `WORKER_ID` and host name,
+and its first heartbeat turns the row `running`. A worker that never comes up is reaped as
+stale. To scale down it stops the worker running the fewest jobs, the newest of those, in the
+background: SIGTERM makes it drain, and Docker waits `WORKER_SHUTDOWN_GRACE` + 10s before it
+kills it. On its own way out the scaler waits for the stops it started.
+
+**Drivers.** The scaler sees workers through three methods, so Docker is one driver among
+possible others (a Kubernetes one would scale pods behind the same calls):
+
+```go
+type Driver interface {
+	List(ctx context.Context) ([]Instance, error)
+	Start(ctx context.Context, name string) error
+	Stop(ctx context.Context, name string) error
+}
+```
+
+- `docker` talks to the Engine API (v1.41) on `/var/run/docker.sock` with `net/http`. It needs
+  six calls (ping, list by label, create, start, stop, remove), too few to pull in the Docker
+  SDK and its dependencies. Workers run the scaler's own image as `worker`, labelled
+  `tasklane.role=worker`, on the compose network with the `jobdata` volume, and get the
+  scaler's settings named in `WORKER_ENV` (database, SMTP, data dir, concurrency, ...).
+- `noop` keeps workers in memory and logs what it would do. It is the default outside compose
+  and what the tests use.
+
+**Compose.** There is no fixed worker service. The `scaler` service mounts the Docker socket,
+which on Docker Desktop is open to root only, so it runs as root. `make up` brings the stack
+up and the scaler starts the two minimum workers; `make down` stops the scaler, removes the
+labelled containers, then takes the stack down.
+
+**A 10k flood** of `image.resize` jobs from the default team, switched to enterprise, on an
+Apple M4 with Docker Desktop (10 CPUs), timed from the first batch:
+
+| What                                  | When  |
+|---------------------------------------|-------|
+| 20 batches of 500 submitted           | 0.5s  |
+| scaler starts eight workers (2→10)    | 1s    |
+| 10 workers running                    | 2.1s  |
+| target falls under 10, `hold`         | 13.8s |
+| queue drained                         | 26s   |
+| cool-down over, first step down       | 33.8s |
+| back to 2 workers, one step every 3s  | 56s   |
+
+The same flood on two fixed workers took 45s. Ten workers run five times as many jobs at once
+but finish only 1.8x sooner: at about 400 jobs a second the database is the limit, as every
+grab and finish of one team updates its `team_usage` row and sends a `NOTIFY`.
 
 ## Live updates
 
@@ -270,11 +350,11 @@ short, far under `NOTIFY`'s 8000-byte limit; Go refuses to send one over 4000.
 | Event        | Sent by                                               | Data                                                                                                 |
 |--------------|-------------------------------------------------------|------------------------------------------------------------------------------------------------------|
 | `job`        | a trigger on `jobs`, on any status or progress change | id, team_id, type, status, progress, attempts, run_at, locked_by, last_error (200 chars), updated_at |
-| `worker`     | the worker's heartbeat, drain and removal statements  | id, host, state (running, draining, stopped), started_at, last_seen_at, jobs_done                    |
+| `worker`     | the scaler's start, a worker's heartbeat, drain, exit | id, host, state (starting, running, draining, stopped), started_at, last_seen_at, jobs_done          |
 | `rejected`   | the api that answered a submit with `429`             | team_id, jobs                                                                                        |
-| `stats`      | the api leading the scheduler, every second           | the overview snapshot and one new sample                                                             |
+| `stats`      | the api leading the scheduler, every second           | the overview snapshot with the scaler's status, and one new sample                                   |
 | `team_usage` | the same api, every second, 20 teams per event        | team_id, queued, running, jobs_last_minute, rejected_last_minute, fair_share                         |
-| `decision`   | the scaler (step 8)                                   |                                                                                                      |
+| `decision`   | the leading scaler, on each decision                  | id, at, action (up, down, hold), from, to, reason                                                    |
 | `reset`      | an api, to its own streams                            | `{}`: refetch everything                                                                             |
 
 - **Jobs.** A trigger covers every path that changes a job (submits, grabs, finishes, holds,
@@ -361,7 +441,9 @@ GET    /healthz
   throttle, event encoding and replay.
 - Integration tests against a real Postgres (testcontainers): double-grab, lease
   expiry, idempotency, starvation, plan weights, worker caps, auth, leader failover,
-  events crossing api processes, replay after a reconnect, dead job groups.
+  events crossing api processes, replay after a reconnect, dead job groups, the scaler's
+  loop on the noop driver and its leadership.
+- The Docker driver against a fake daemon on a unix socket, and a 10k flood by hand.
 - CI runs `go vet`, tests, and the web build on every push.
 
 ## Build order
