@@ -36,6 +36,9 @@ type API struct {
 }
 
 type Worker struct {
+	// ID names the worker. The scaler sets it to the container's name; left
+	// empty, the worker makes one up from its host name.
+	ID                string
 	Concurrency       int
 	Lease             time.Duration
 	PollInterval      time.Duration
@@ -79,6 +82,7 @@ func Load() (Config, error) {
 			MaxSchedulesPerTeam: l.int("MAX_SCHEDULES_PER_TEAM", 50),
 		},
 		Worker: Worker{
+			ID:                l.str("WORKER_ID", ""),
 			Concurrency:       l.int("WORKER_CONCURRENCY", 4),
 			Lease:             l.duration("WORKER_LEASE", 30*time.Second),
 			PollInterval:      l.duration("WORKER_POLL_INTERVAL", 5*time.Second),

@@ -43,8 +43,12 @@ type Worker struct {
 
 func NewWorker(repo *repositories.Jobs, workers *repositories.Workers, buckets *repositories.RateBuckets, types jobs.Registry, cfg config.Worker) *Worker {
 	host, _ := os.Hostname()
+	id := cfg.ID
+	if id == "" {
+		id = fmt.Sprintf("%s-%08x", host, rand.Uint32())
+	}
 	return &Worker{
-		id:      fmt.Sprintf("%s-%08x", host, rand.Uint32()),
+		id:      id,
 		host:    host,
 		cfg:     cfg,
 		repo:    repo,
