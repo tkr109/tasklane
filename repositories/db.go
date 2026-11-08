@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
@@ -84,5 +85,34 @@ func listen(ctx context.Context, db *pgxpool.Pool, channel string, ready func(),
 			return err
 		}
 		handle(n.Payload)
+	}
+}
+
+// Leader is a connection of its own that competes for one advisory lock. A
+// session lock lasts as long as the session, which is how the lead passes on when
+// a process dies.
+type Leader struct {
+	conn *pgx.Conn
+	key  int64
+}
+
+func newLeader(ctx context.Context, db *pgxpool.Pool, key int64) (*Leader, error) {
+	pooled, err := db.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &Leader{conn: pooled.Hijack(), key: key}, nil
+}
+
+// TryLead takes the lock unless another session has it.
+func (l *Leader) TryLead(ctx context.Context) (bool, error) {
+	var ok bool
+	err := l.conn.QueryRow(ctx, `select pg_try_advisory_lock($1)`, l.key).Scan(&ok)
+	return ok, err
+}
+
+func (l *Leader) Close() {
+	if err := l.conn.Close(context.Background()); err != nil {
+		slog.Warn("close a leader connection", "err", err)
 	}
 }

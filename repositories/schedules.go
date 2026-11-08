@@ -115,31 +115,17 @@ func (r *Schedules) Delete(ctx context.Context, teamID, id int64) error {
 // makes its process the one firing schedules, and the firing goes through it too,
 // so a process whose connection has died can't fire.
 type LeaderConn struct {
-	conn *pgx.Conn
+	*Leader
 }
 
 // LeaderConn takes a connection out of the pool for good. Close it to give up the
 // lead.
 func (r *Schedules) LeaderConn(ctx context.Context) (*LeaderConn, error) {
-	pooled, err := r.db.Acquire(ctx)
+	l, err := newLeader(ctx, r.db, schedulerLock)
 	if err != nil {
 		return nil, err
 	}
-	return &LeaderConn{conn: pooled.Hijack()}, nil
-}
-
-// TryLead takes the scheduler lock unless another session has it. The lock lasts
-// as long as the session, which is how it passes on when a process dies.
-func (l *LeaderConn) TryLead(ctx context.Context) (bool, error) {
-	var ok bool
-	err := l.conn.QueryRow(ctx, `select pg_try_advisory_lock($1)`, schedulerLock).Scan(&ok)
-	return ok, err
-}
-
-func (l *LeaderConn) Close() {
-	if err := l.conn.Close(context.Background()); err != nil {
-		slog.Warn("close the scheduler connection", "err", err)
-	}
+	return &LeaderConn{Leader: l}, nil
 }
 
 // FireDue fires up to limit due schedules in one transaction, queueing each one's
