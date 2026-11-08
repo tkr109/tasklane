@@ -46,7 +46,7 @@ tasklane/
 ├── config/            # env vars and defaults
 ├── routes/            # URL -> controller wiring
 ├── controllers/       # HTTP handlers, request/response shapes
-├── middleware/        # API key auth, rate limit, request logging
+├── middleware/        # API key auth, request logging
 ├── services/          # business logic: queue, fairness, scheduler, scaler, events
 ├── repositories/      # SQL queries, one file per table group
 ├── models/            # plain data types (Job, Team, Plan, ApiKey...)
@@ -69,14 +69,16 @@ There is no `utils/` folder; a helper lives next to the code that uses it.
 - `api_keys`: team_id, prefix (for display), sha256 hash (unique, what a key is looked up
   by), revoked_at
 - `jobs`: team_id, type, payload (jsonb), priority, status, attempts, max_attempts,
-  run_at, lease_until, locked_by, idempotency_key, progress, last_error, timestamps
+  run_at, lease_until, locked_by, idempotency_key, progress, last_error, throttled_at
+  (when its type's rate limit last pushed it back), timestamps
 - `job_events`: job_id, kind, message, at (the timeline)
-- `schedules`: team_id, cron expression, job template, next_run_at
+- `schedules`: team_id, cron expression, timezone, job template (type, payload, priority,
+  max_attempts), enabled, next_run_at, last_run_at
 - `workers`: id, host, started_at, last_seen_at (heartbeat). There is no current-job column:
   a worker's running jobs are the ones whose `jobs.locked_by` is its id.
 - `team_usage`: team_id, running (jobs running now), served (a decaying count of jobs
   started), served_at. Used for fair share.
-- `rate_buckets`: key (team or job type), tokens, updated_at
+- `rate_buckets`: key (`team:<id>` or `type:<name>`), tokens, updated_at
 
 Redis can come back later behind the same service interfaces if load tests show Postgres is
 the bottleneck for rate limits or events.
@@ -112,7 +114,8 @@ reaper also deletes worker rows that missed 10 heartbeats in a row.
 `(team_id, idempotency_key)` means a repeat returns the original job instead of a new one.
 
 **Retries.** An attempt is counted when a worker grabs the job, so a crash mid-job still
-uses one up. On failure: `run_at = now() + backoff(attempt)` with exponential growth and
+uses one up. The one exception is a job its type's rate limit sends straight back (see Rate
+limits): that grab gives the attempt back. On failure: `run_at = now() + backoff(attempt)` with exponential growth and
 jitter, and the job sits in `failed` until then. After `max_attempts` the job goes to
 `dead`. The dashboard can retry dead jobs.
 
@@ -131,7 +134,7 @@ worker cap is skipped. See Fair share below.
 
 **Scheduling.** Delayed jobs are just `run_at` in the future. Repeating jobs come from
 `schedules`. Only one scheduler fires them: whoever holds a Postgres advisory lock. If that
-process dies, the lock frees and another takes over.
+process dies, the lock frees and another takes over. See Scheduling below.
 
 ## Fair share
 
@@ -166,29 +169,73 @@ fair share is more slots than its cap stops at the cap, and the spare slots go t
 
 Lock order: a grab locks a job row and then its team's row; a finish does the same through
 the trigger. Nothing waits on a job row while holding a team row, so grabs and finishes
-can't deadlock. Two reapers freeing jobs of several teams at the same moment can, and
-Postgres then cancels one, which retries on its next tick.
+can't deadlock. Two reapers freeing jobs of several teams at once could, so the reaper runs
+under an advisory transaction lock: one reaps, the others skip that tick.
 
 ## Auth
 
 Apps call the API with `Authorization: Bearer tk_live_...`. Only a sha256 hash of each key
 and a short display prefix are stored; the full key is shown once, when it is created. The
 middleware resolves the key to its team and plan and caches that for `AUTH_CACHE_TTL` (5s),
-so a revoked key or a plan switch shows within that time. Scheduling reads plans straight
-from Postgres, so a plan switch changes weights and caps on the next grab.
+so a plan switch shows within that time. A revoke shows at once on the API process that
+handled it, which drops that team's cached keys, and within the TTL on the others.
+Scheduling reads plans straight from Postgres, so a plan switch changes weights and caps on
+the next grab.
 
 The admin endpoints the dashboard uses take a single shared `ADMIN_TOKEN` the same way. It is
-a demo, so there are no users or logins. Local runs set `DEV_API_KEY`, which the api
-registers for the default team on startup.
+a demo, so there are no users or logins. Local runs set `DEV_API_KEY`, which the api makes a
+live key of the default team on startup, adding it again or taking back a revoke.
 
 ## Rate limits
 
-1. **Incoming.** Token bucket per team in a `rate_buckets` table, refilled and spent in one
-   atomic `UPDATE ... RETURNING`. Batch of N costs N. Over the limit returns `429` with
-   `Retry-After`. Responses carry `X-RateLimit-Remaining`.
-2. **Outgoing.** Per job type, shared across all workers (e.g. email 10/s). A job that hits
-   it is pushed back a little and does not use up a retry.
-3. **Overload.** If total queued jobs pass a ceiling, submits get `503` until it drains.
+All in Postgres, in the `rate_buckets` table. A bucket is refilled from its `updated_at` and
+spent from in one atomic upsert (`INSERT ... ON CONFLICT DO UPDATE ... WHERE` enough tokens,
+`RETURNING` what is left), so API processes can't overspend between them.
+
+1. **Incoming.** A bucket per team, refilled at the plan's jobs per minute up to its burst.
+   A submit costs 1 and a batch of N costs N; a batch bigger than the burst could never fit
+   and gets `400`. Over the limit returns `429` with `Retry-After` (whole seconds until
+   enough tokens are back). Submit responses carry `X-RateLimit-Limit` (the bucket size,
+   i.e. the burst) and `X-RateLimit-Remaining` (whole tokens left). The check sits in the
+   jobs controller rather than a middleware because the cost depends on the batch size.
+   The teams admin list shows `usage.jobs_last_minute` next to the plan's jobs per minute.
+2. **Outgoing.** `TYPE_RATE_LIMITS` (default `email=10/s,webhook=200/s`) gives a type a
+   bucket shared by all workers, with a burst of a tenth of a second's worth (at least 1).
+   After a grab, a job of a limited type needs a token. Without one it goes straight back to
+   `queued` until the next token is due, with its attempt and its team's fair share turn
+   given back, a `throttled` event on its timeline, and `throttled_at` set. That worker then
+   leaves the type alone until the token is due, so a saturated type doesn't spin.
+   `HeldByLimit` counts the waiting jobs of every type throttled in a recent window, which
+   is what the scaler should leave out.
+3. **Overload.** Once `QUEUE_CEILING` (default 100,000) runnable jobs are waiting, submits
+   get `503` with `Retry-After: 5` until it drains. The count is shared by every request and
+   refreshed at most once a second, so a flood doesn't turn into a flood of counts.
+
+Scheduled jobs skip the incoming limit and the overload check; only submits pay.
+
+## Scheduling
+
+**Delayed jobs.** A submit (or each job in a batch) may give `run_at` (RFC 3339) or `delay`
+(a Go duration such as `90s` or `2h30m`), up to a year out. A time in the past means now,
+since a backdated job would jump the queue through aging.
+
+**Repeating jobs.** A schedule has a cron expression (five fields, or a descriptor such as
+`@hourly` or `@every 2h`), parsed with robfig/cron's parser, and an IANA time zone (UTC by
+default). The API refuses anything firing more than once a minute. Changing a schedule
+works out its next run again from now.
+
+**One leader.** Every api process runs a scheduler on a connection of its own. Each tick
+(`SCHEDULER_TICK`, 1s) it tries `pg_try_advisory_lock`; the one that gets it leads and fires
+through that same connection, so a process whose connection died can't fire. When the
+leader exits or its session drops, the lock goes with the session and another api takes
+over on its next tick.
+
+**Exactly once per tick.** Firing is one transaction: lock the due schedules
+(`FOR UPDATE SKIP LOCKED`), insert each one's job with the idempotency key
+`schedule:<id>:<tick>` (`ON CONFLICT DO NOTHING`), and move `next_run_at` on. Even two
+processes that both believe they lead can't fire a tick twice. The next run counts from now,
+not from the tick that fired, so after an outage a schedule runs one catch-up, not one per
+missed tick.
 
 ## Autoscaling
 
@@ -222,13 +269,17 @@ let a reconnecting browser catch up.
 ## API (first cut)
 
 ```
-POST   /api/jobs                               submit (Idempotency-Key supported)
+POST   /api/jobs                               submit (Idempotency-Key, run_at or delay)
 POST   /api/jobs/batch                         submit many
 GET    /api/jobs                               list, cursor pagination, filters
 GET    /api/jobs/{id}                          detail + timeline
 POST   /api/jobs/{id}/cancel
 POST   /api/jobs/{id}/retry
-GET    /api/schedules                          list / create / delete
+GET    /api/schedules                          the team's schedules
+POST   /api/schedules                          create {cron, timezone, type, payload, ...}
+GET    /api/schedules/{id}
+PUT    /api/schedules/{id}                     replace, enabled: false pauses it
+DELETE /api/schedules/{id}
 GET    /api/workers
 GET    /api/stats
 GET    /api/plans                              admin
