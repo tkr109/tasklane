@@ -100,6 +100,7 @@ func newAPIWithCeiling(t *testing.T, cacheTTL time.Duration, ceiling int) *api {
 	handler := New(
 		controllers.NewJobs(services.NewQueue(repositories.NewJobs(pool), jobs.Defaults()),
 			services.NewLimits(repositories.NewRateBuckets(pool), repositories.NewJobs(pool), ceiling)),
+		controllers.NewSchedules(services.NewSchedules(repositories.NewSchedules(pool), jobs.Defaults())),
 		controllers.NewTeams(services.NewTeams(repositories.NewTeams(pool), keys, auth)),
 		auth, adminToken, pool.Ping,
 	)
@@ -343,7 +344,7 @@ func TestAdminRoutes(t *testing.T) {
 		t.Fatalf("teams = %+v", teams.Teams)
 	}
 
-	off := httptest.NewServer(New(controllers.NewJobs(nil, nil), controllers.NewTeams(nil), nil, "", nil))
+	off := httptest.NewServer(New(controllers.NewJobs(nil, nil), controllers.NewSchedules(nil), controllers.NewTeams(nil), nil, "", nil))
 	defer off.Close()
 	resp, err := http.Get(off.URL + "/api/teams")
 	if err != nil {
@@ -503,4 +504,67 @@ func TestOverloadedQueueGets503(t *testing.T) {
 	waitUntil(t, 3*time.Second, "submits to be accepted once the queue drained", func() bool {
 		return a.call("POST", "/api/jobs", key.Key, one, nil) == http.StatusCreated
 	})
+}
+
+func TestSchedulesBelongToTheirTeam(t *testing.T) {
+	a := newAPI(t, time.Minute)
+	_, acme := a.createTeam("acme", "free")
+	_, globex := a.createTeam("globex", "free")
+
+	type schedule struct {
+		ID        int64     `json:"id"`
+		Cron      string    `json:"cron"`
+		Timezone  string    `json:"timezone"`
+		Type      string    `json:"type"`
+		Priority  int       `json:"priority"`
+		Enabled   bool      `json:"enabled"`
+		NextRunAt time.Time `json:"next_run_at"`
+	}
+	body := map[string]any{"cron": "*/5 * * * *", "timezone": "Europe/Berlin", "type": "sleep", "payload": map[string]int{"seconds": 1}}
+	var created schedule
+	if code := a.call("POST", "/api/schedules", acme.Key, body, &created); code != http.StatusCreated {
+		t.Fatalf("create: status %d", code)
+	}
+	if created.Timezone != "Europe/Berlin" || !created.Enabled || created.Priority != 5 || !created.NextRunAt.After(time.Now()) {
+		t.Fatalf("created %+v", created)
+	}
+	path := "/api/schedules/" + strconv.FormatInt(created.ID, 10)
+
+	for name, bad := range map[string]map[string]any{
+		"a bad expression":        {"cron": "every day", "type": "sleep"},
+		"more than once a minute": {"cron": "@every 10s", "type": "sleep"},
+		"an unknown zone":         {"cron": "0 9 * * *", "timezone": "Moon/Base", "type": "sleep"},
+	} {
+		if code := a.call("POST", "/api/schedules", acme.Key, bad, nil); code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", name, code)
+		}
+	}
+
+	var list struct {
+		Schedules json.RawMessage `json:"schedules"`
+	}
+	if code := a.call("GET", "/api/schedules", globex.Key, nil, &list); code != http.StatusOK || string(list.Schedules) != "[]" {
+		t.Fatalf("another team's list: status %d, schedules %s", code, list.Schedules)
+	}
+	for _, method := range []string{"GET", "PUT", "DELETE"} {
+		if code := a.call(method, path, globex.Key, body, nil); code != http.StatusNotFound {
+			t.Errorf("%s on another team's schedule: status %d, want 404", method, code)
+		}
+	}
+
+	body["enabled"] = false
+	body["cron"] = "@daily"
+	var updated schedule
+	if code := a.call("PUT", path, acme.Key, body, &updated); code != http.StatusOK {
+		t.Fatalf("update: status %d", code)
+	}
+	if updated.Enabled || updated.Cron != "@daily" {
+		t.Fatalf("updated %+v", updated)
+	}
+	if code := a.call("DELETE", path, acme.Key, nil, nil); code != http.StatusNoContent {
+		t.Fatalf("delete: status %d", code)
+	}
+	if code := a.call("GET", path, acme.Key, nil, nil); code != http.StatusNotFound {
+		t.Fatalf("get after delete: status %d, want 404", code)
+	}
 }
