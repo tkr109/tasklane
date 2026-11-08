@@ -54,6 +54,33 @@ export interface JobSpec {
   max_attempts?: number
 }
 
+// A repeating job, owned by the team of the API key.
+export interface Schedule {
+  id: number
+  team_id: number
+  cron: string
+  timezone: string
+  type: string
+  payload: unknown
+  priority: number
+  max_attempts: number
+  enabled: boolean
+  next_run_at: string
+  last_run_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ScheduleSpec {
+  cron: string
+  timezone?: string
+  type: string
+  payload?: unknown
+  priority?: number
+  max_attempts?: number
+  enabled?: boolean
+}
+
 export interface Sample {
   at: string
   queued: number

@@ -12,6 +12,8 @@ import type {
   NewApiKey,
   PlanName,
   ScalerDecision,
+  Schedule,
+  ScheduleSpec,
   Stats,
   Team,
   TeamSummary,
@@ -136,6 +138,8 @@ export class World {
   private decisions: ScalerDecision[] = []
   private deadGroups: DeadGroup[]
   private samples: Stats['samples'] = []
+  private schedules: Schedule[] = []
+  private nextScheduleId = 1
 
   private queued = 46
   private running = 6
@@ -311,6 +315,47 @@ export class World {
     return this.toJob(job)
   }
 
+  listSchedules(teamId: number): { schedules: Schedule[] } {
+    return { schedules: this.schedules.filter((s) => s.team_id === teamId) }
+  }
+
+  // Checks the cron's shape only; every mock schedule fires once a minute.
+  createSchedule(teamId: number, spec: ScheduleSpec): Schedule {
+    const cron = spec.cron?.trim() ?? ''
+    if (!cron.startsWith('@') && cron.split(/\s+/).length !== 5) {
+      throw new MockError(400, `invalid request: cron "${cron}" needs five fields or a descriptor such as @hourly`)
+    }
+    if (!JOB_TYPES[spec.type]) {
+      throw new MockError(400, `invalid request: unknown job type "${spec.type}", expected one of [${TYPE_NAMES.join(' ')}]`)
+    }
+    if (this.listSchedules(teamId).schedules.length >= 50) {
+      throw new MockError(409, 'conflict: a team can have at most 50 schedules')
+    }
+    const now = Date.now()
+    const schedule: Schedule = {
+      id: this.nextScheduleId++,
+      team_id: teamId,
+      cron,
+      timezone: spec.timezone || 'UTC',
+      type: spec.type,
+      payload: spec.payload ?? {},
+      priority: spec.priority ?? 5,
+      max_attempts: spec.max_attempts ?? 5,
+      enabled: spec.enabled ?? true,
+      next_run_at: iso(Math.ceil((now + 1) / MINUTE) * MINUTE),
+      created_at: iso(now),
+      updated_at: iso(now),
+    }
+    this.schedules.push(schedule)
+    return schedule
+  }
+
+  deleteSchedule(teamId: number, id: number) {
+    const schedule = this.schedules.find((s) => s.id === id && s.team_id === teamId)
+    if (!schedule) throw new MockError(404, 'schedule not found')
+    this.schedules = this.schedules.filter((s) => s !== schedule)
+  }
+
   stats(): Stats {
     return { ...this.snapshot(), samples: [...this.samples] }
   }
@@ -409,6 +454,7 @@ export class World {
     this.stepQueue(dt, now)
     this.stepTeams(dt, now)
     this.stepJobs(dt, now)
+    this.fireSchedules(now)
 
     if (this.ticks % 2 === 0) {
       const sample = {
@@ -568,6 +614,20 @@ export class World {
       })
     }
     this.pruneJobs()
+  }
+
+  private fireSchedules(now: number) {
+    for (const s of this.schedules) {
+      if (!s.enabled || new Date(s.next_run_at).getTime() > now) continue
+      this.createJob(this.teamById(s.team_id), s.type, now, {
+        track: true,
+        scheduleId: s.id,
+        payload: s.payload,
+        priority: s.priority,
+        maxAttempts: s.max_attempts,
+      })
+      Object.assign(s, { last_run_at: iso(now), next_run_at: iso(Math.ceil((now + 1) / MINUTE) * MINUTE) })
+    }
   }
 
   private scale(now: number) {

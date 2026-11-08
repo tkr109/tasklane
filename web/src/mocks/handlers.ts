@@ -1,5 +1,5 @@
 import { delay, http, HttpResponse } from 'msw'
-import { JOB_STATUSES, type JobSpec, type JobStatus, type PlanName } from '../api/types'
+import { JOB_STATUSES, type JobSpec, type JobStatus, type PlanName, type ScheduleSpec } from '../api/types'
 import { ADMIN_TOKEN } from './seed'
 import { MockError, World } from './world'
 
@@ -65,6 +65,24 @@ export const handlers = [
     withTeam(request, (team) => world.retryJob(team, idParam(params.id))),
   ),
 
+  http.get('/api/schedules', ({ request }) => withTeam(request, (team) => world.listSchedules(team))),
+
+  http.post('/api/schedules', async ({ request }) => {
+    const body = (await request.json()) as ScheduleSpec
+    return withTeam(request, (team) => world.createSchedule(team, body), 201)
+  }),
+
+  http.delete('/api/schedules/:id', async ({ params, request }) => {
+    await delay(120)
+    try {
+      world.deleteSchedule(world.teamForKey(request.headers.get('Authorization')), idParam(params.id))
+      return new HttpResponse(null, { status: 204 })
+    } catch (err) {
+      if (!(err instanceof MockError)) throw err
+      return HttpResponse.json({ error: err.message }, { status: err.status })
+    }
+  }),
+
   http.get('/api/plans', ({ request }) => withAdmin(request, () => world.plansResponse())),
 
   http.get('/api/teams', ({ request }) => withAdmin(request, () => world.teamsResponse())),
@@ -86,7 +104,6 @@ export const handlers = [
     withAdmin(request, () => world.revokeKey(idParam(params.id), idParam(params.keyId))),
   ),
 
-  // The routes below aren't in the backend yet; their shapes follow the design doc.
   http.get('/api/stats', ({ request }) => withAdmin(request, () => world.stats())),
 
   http.get('/api/workers', ({ request }) => withAdmin(request, () => world.workersResponse())),
