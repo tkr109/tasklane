@@ -4,7 +4,7 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 export ADMIN_TOKEN ?= dev-admin-token
 export DEV_API_KEY ?= tk_live_localdev
 
-.PHONY: up down db test vet run-api run-worker run-scaler
+.PHONY: up down db test vet run-api run-worker run-scaler web-install web-dev web-dev-mock web-build
 
 up:
 	$(COMPOSE) up -d --build
@@ -34,3 +34,16 @@ run-worker: db
 # Outside Docker the scaler only logs what it would do.
 run-scaler: db
 	go run . scaler
+
+web-install:
+	cd web && npm ci
+
+# The dev server proxies /api to the api on :8080.
+web-dev:
+	cd web && npm run dev
+
+web-dev-mock:
+	cd web && npm run dev:mock
+
+web-build:
+	cd web && npm run build
