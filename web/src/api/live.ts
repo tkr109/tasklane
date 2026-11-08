@@ -8,6 +8,7 @@ export type JobUpdate = Pick<
 // Sent with each heartbeat and state change; running jobs come from job events.
 export type WorkerUpdate = Omit<Worker, 'state' | 'running_jobs'> & { state: Worker['state'] | 'stopped' }
 
+// Sent for at most 20 teams at a time.
 export type TeamUsageUpdate = TeamRate & TeamSummary['usage']
 
 export type StatsTick = Omit<Stats, 'samples'> & { sample: Stats['samples'][number] }

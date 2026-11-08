@@ -14,27 +14,20 @@ interface TeamsTableProps {
 }
 
 function Usage({ team, rate }: { team: TeamSummary; rate: TeamRate | undefined }) {
-  if (!rate) {
-    return (
-      <span className="num">
-        <b>{formatNumber(team.usage.queued)}</b> <span className="muted">queued,</span>{' '}
-        <b>{formatNumber(team.usage.running)}</b> <span className="muted">running</span>
-      </span>
-    )
-  }
   const limit = team.plan.jobs_per_minute
+  const jobs = team.usage.jobs_last_minute
   return (
     <div className="usage">
       <div className="lbl">
         <span className="num">
-          <b>{formatNumber(rate.jobs_this_minute)}</b> / {formatNumber(limit)}
+          <b>{formatNumber(jobs)}</b> / {formatNumber(limit)}
         </span>
-        <span className="muted">jobs this minute</span>
-        {rate.rejected_this_minute > 0 && (
-          <span className="warn">{formatNumber(rate.rejected_this_minute)} got 429</span>
+        <span className="muted">jobs in the last minute</span>
+        {rate && rate.rejected_last_minute > 0 && (
+          <span className="warn">{formatNumber(rate.rejected_last_minute)} got 429</span>
         )}
       </div>
-      <Meter percent={(rate.jobs_this_minute / limit) * 100} />
+      <Meter percent={(jobs / limit) * 100} />
     </div>
   )
 }

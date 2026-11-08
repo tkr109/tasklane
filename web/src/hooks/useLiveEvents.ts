@@ -181,18 +181,17 @@ function applyTeamUsage(queryClient: QueryClient, updates: TeamUsageUpdate[]) {
     if (!prev) return prev
     const teams = prev.teams.map((team) => {
       const u = byTeam.get(team.id)
-      return u ? { ...team, usage: { queued: u.queued, running: u.running } } : team
+      if (!u) return team
+      return { ...team, usage: { queued: u.queued, running: u.running, jobs_last_minute: u.jobs_last_minute } }
     })
     return { teams }
   })
-  const rates: Record<number, TeamRate> = {}
-  for (const u of updates) {
-    rates[u.team_id] = {
-      team_id: u.team_id,
-      jobs_this_minute: u.jobs_this_minute,
-      rejected_this_minute: u.rejected_this_minute,
-      fair_share: u.fair_share,
+  // Each event covers only some of the teams, so it adds to what the others last reported.
+  queryClient.setQueryData<Record<number, TeamRate>>(queryKeys.teamRates, (prev) => {
+    const rates = { ...prev }
+    for (const { team_id, jobs_last_minute, rejected_last_minute, fair_share } of updates) {
+      rates[team_id] = { team_id, jobs_last_minute, rejected_last_minute, fair_share }
     }
-  }
-  queryClient.setQueryData(queryKeys.teamRates, rates)
+    return rates
+  })
 }

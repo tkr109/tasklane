@@ -153,7 +153,7 @@ export interface Team {
 }
 
 export interface TeamSummary extends Team {
-  usage: { queued: number; running: number }
+  usage: { queued: number; running: number; jobs_last_minute: number }
 }
 
 // The full key is only in the response that creates it.
@@ -169,11 +169,11 @@ export interface NewApiKey extends ApiKey {
   key: string
 }
 
-// Per-minute usage and fair share arrive with rate limits; until then only the stream has them.
+// Refusals and fair share only come with team_usage events.
 export interface TeamRate {
   team_id: number
-  jobs_this_minute: number
-  rejected_this_minute: number
+  jobs_last_minute: number
+  rejected_last_minute: number
   fair_share: number
 }
 

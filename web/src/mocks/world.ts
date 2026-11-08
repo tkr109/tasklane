@@ -93,6 +93,7 @@ const TICK_MS = 500
 const SAMPLE_WINDOW = 150
 const MAX_TRACKED_JOBS = 600
 const LEASE_MS = 30_000
+const TEAM_USAGE_CHUNK = 20
 const SECOND = 1000
 const MINUTE = 60 * SECOND
 const HOUR = 60 * MINUTE
@@ -304,7 +305,12 @@ export class World {
   }
 
   teamsResponse(): { teams: TeamSummary[] } {
-    return { teams: this.teams.map((t) => ({ ...this.toTeam(t), usage: this.queuedAndRunning(t) })) }
+    return {
+      teams: this.teams.map((t) => ({
+        ...this.toTeam(t),
+        usage: { ...this.queuedAndRunning(t), jobs_last_minute: Math.round(t.usage) },
+      })),
+    }
   }
 
   switchPlan(teamId: number, plan: PlanName): Team {
@@ -381,10 +387,10 @@ export class World {
       this.failedThisSecond = 0
       this.samples = [...this.samples, sample].slice(-SAMPLE_WINDOW)
       this.emit('stats', { ...this.snapshot(), sample })
-      this.emit(
-        'team_usage',
-        this.teams.map((t) => ({ team_id: t.id, ...this.queuedAndRunning(t), ...this.rateOf(t) })),
-      )
+      const usage = this.teams.map((t) => ({ team_id: t.id, ...this.queuedAndRunning(t), ...this.rateOf(t) }))
+      for (let i = 0; i < usage.length; i += TEAM_USAGE_CHUNK) {
+        this.emit('team_usage', usage.slice(i, i + TEAM_USAGE_CHUNK))
+      }
     }
     if (this.ticks % ((SCALER.intervalSeconds * SECOND) / TICK_MS) === 0) this.scale(now)
   }
@@ -890,8 +896,8 @@ export class World {
 
   private rateOf(team: MockTeam) {
     return {
-      jobs_this_minute: Math.round(team.usage),
-      rejected_this_minute: Math.round(team.rejected),
+      jobs_last_minute: Math.round(team.usage),
+      rejected_last_minute: Math.round(team.rejected),
       fair_share: this.shareOf(team),
     }
   }

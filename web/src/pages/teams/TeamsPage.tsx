@@ -22,7 +22,7 @@ export function TeamsPage() {
   const now = useNow()
   const { data: teamsData, error: teamsError } = useQuery(teamsQuery)
   const { data: plansData, error: plansError } = useQuery(plansQuery)
-  // Filled only by the event stream; the API has no per-minute usage yet.
+  // Filled only by the event stream.
   const { data: rates } = useQuery<Record<number, TeamRate>>({ queryKey: queryKeys.teamRates, queryFn: skipToken })
   const [pickedId, setPickedId] = useState<number>()
   const [newKey, setNewKey] = useState<{ teamId: number; key: string } | null>(null)
