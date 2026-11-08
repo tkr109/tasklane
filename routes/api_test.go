@@ -367,6 +367,28 @@ func TestDevKeyWorksForTheDefaultTeam(t *testing.T) {
 	if job.TeamID != defaultID {
 		t.Fatalf("job went to team %d, want the default team %d", job.TeamID, defaultID)
 	}
+
+	// Someone revokes the dev key from the dashboard; the next startup brings it back.
+	var keys struct {
+		Keys []newKey `json:"keys"`
+	}
+	if code := a.call("GET", teamPath(defaultID)+"/keys", adminToken, nil, &keys); code != http.StatusOK || len(keys.Keys) != 1 {
+		t.Fatalf("list the default team's keys: status %d, %d keys", code, len(keys.Keys))
+	}
+	revoke := teamPath(defaultID) + "/keys/" + strconv.FormatInt(keys.Keys[0].ID, 10) + "/revoke"
+	if code := a.call("POST", revoke, adminToken, nil, nil); code != http.StatusOK {
+		t.Fatalf("revoke the dev key: status %d", code)
+	}
+	if code := a.call("GET", "/api/jobs", devKey, nil, nil); code != http.StatusUnauthorized {
+		t.Fatalf("revoked dev key: status %d, want 401", code)
+	}
+	if err := teams.EnsureDevKey(ctx, devKey); err != nil {
+		t.Fatalf("ensure dev key again: %v", err)
+	}
+	if code := a.call("GET", "/api/jobs", devKey, nil, nil); code != http.StatusOK {
+		t.Fatalf("dev key after a restart: status %d, want 200", code)
+	}
+
 	if err := teams.EnsureDevKey(ctx, "localdev"); err == nil {
 		t.Error("a dev key without the tk_live_ prefix was accepted")
 	}
