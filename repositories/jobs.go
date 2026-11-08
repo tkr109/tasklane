@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,7 +20,7 @@ const queuedChannel = "tasklane_jobs_queued"
 
 const jobColumns = `id, team_id, type, payload, priority, status, attempts, max_attempts, run_at,
 	lease_until, coalesce(locked_by, '') as locked_by, coalesce(idempotency_key, '') as idempotency_key,
-	progress, coalesce(last_error, '') as last_error, created_at, updated_at, started_at, finished_at`
+	progress, coalesce(last_error, '') as last_error, result, created_at, updated_at, started_at, finished_at`
 
 type Jobs struct {
 	db *pgxpool.Pool
@@ -33,7 +34,7 @@ func scanJob(row pgx.Row) (models.Job, error) {
 	var j models.Job
 	err := row.Scan(&j.ID, &j.TeamID, &j.Type, &j.Payload, &j.Priority, &j.Status, &j.Attempts,
 		&j.MaxAttempts, &j.RunAt, &j.LeaseUntil, &j.LockedBy, &j.IdempotencyKey, &j.Progress,
-		&j.LastError, &j.CreatedAt, &j.UpdatedAt, &j.StartedAt, &j.FinishedAt)
+		&j.LastError, &j.Result, &j.CreatedAt, &j.UpdatedAt, &j.StartedAt, &j.FinishedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return j, ErrNotFound
 	}
@@ -284,17 +285,17 @@ func (r *Jobs) SetProgress(ctx context.Context, id int64, workerID string, perce
 
 // Succeed, ScheduleRetry and MarkDead only touch a job the worker still holds, and
 // return ErrNotFound when it doesn't.
-func (r *Jobs) Succeed(ctx context.Context, id int64, workerID string) error {
+func (r *Jobs) Succeed(ctx context.Context, id int64, workerID string, result json.RawMessage) error {
 	return r.finish(ctx, `
 		with done as (
 			update jobs
-			set status = 'succeeded', progress = 100, last_error = null, lease_until = null,
+			set status = 'succeeded', progress = 100, last_error = null, result = $3, lease_until = null,
 				locked_by = null, finished_at = now(), updated_at = now()
 			where id = $1 and locked_by = $2 and status = 'running'
 			returning id
 		)
 		insert into job_events (job_id, kind) select id, 'succeeded' from done`,
-		id, workerID)
+		id, workerID, result)
 }
 
 func (r *Jobs) ScheduleRetry(ctx context.Context, id int64, workerID string, delay time.Duration, errMsg string) error {

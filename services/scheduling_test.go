@@ -53,10 +53,10 @@ type load struct {
 
 func (l *load) registry(d time.Duration) jobs.Registry {
 	l.running, l.peak = map[int64]int{}, map[int64]int{}
-	return jobs.Registry{"work": {Timeout: 5 * time.Second, Handler: func(ctx context.Context, payload json.RawMessage, _ jobs.Progress) error {
+	return jobs.Registry{"work": {Timeout: 5 * time.Second, Handler: func(ctx context.Context, payload json.RawMessage, _ jobs.Progress) (any, error) {
 		var p struct{ Team int64 }
 		if err := json.Unmarshal(payload, &p); err != nil {
-			return err
+			return nil, err
 		}
 		l.mu.Lock()
 		l.running[p.Team]++
@@ -68,7 +68,7 @@ func (l *load) registry(d time.Duration) jobs.Registry {
 		l.mu.Lock()
 		l.running[p.Team]--
 		l.mu.Unlock()
-		return nil
+		return nil, nil
 	}}}
 }
 

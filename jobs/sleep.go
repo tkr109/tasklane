@@ -8,12 +8,12 @@ import (
 )
 
 // Sleep waits for the requested number of seconds, reporting progress in tenths.
-func Sleep(ctx context.Context, payload json.RawMessage, progress Progress) error {
+func Sleep(ctx context.Context, payload json.RawMessage, progress Progress) (any, error) {
 	var p struct {
 		Seconds float64 `json:"seconds"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return Permanent(fmt.Errorf("sleep: bad payload: %w", err))
+		return nil, Permanent(fmt.Errorf("sleep: bad payload: %w", err))
 	}
 	if p.Seconds <= 0 {
 		p.Seconds = 5
@@ -24,10 +24,10 @@ func Sleep(ctx context.Context, payload json.RawMessage, progress Progress) erro
 	for i := 1; i <= steps; i++ {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil, ctx.Err()
 		case <-time.After(step):
 		}
 		progress(i * 100 / steps)
 	}
-	return nil
+	return nil, nil
 }

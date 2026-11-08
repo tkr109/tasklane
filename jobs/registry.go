@@ -11,7 +11,8 @@ import (
 // Progress reports how far along a job is, from 0 to 100.
 type Progress func(percent int)
 
-type Handler func(ctx context.Context, payload json.RawMessage, progress Progress) error
+// Handler runs one job. A non-nil result is stored as JSON on the succeeded job.
+type Handler func(ctx context.Context, payload json.RawMessage, progress Progress) (result any, err error)
 
 type Type struct {
 	Handler Handler
