@@ -97,12 +97,26 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 		slog.Warn("ADMIN_TOKEN is not set, admin endpoints are off")
 	}
 
+	// Every api runs a scheduler; the one holding the advisory lock fires schedules.
+	schedules := repositories.NewSchedules(pool)
+	scheduler := services.NewScheduler(schedules, cfg.API.SchedulerTick)
+	schedulerCtx, stopScheduler := context.WithCancel(ctx)
+	schedulerDone := make(chan struct{})
+	go func() {
+		defer close(schedulerDone)
+		scheduler.Run(schedulerCtx)
+	}()
+	defer func() {
+		stopScheduler()
+		<-schedulerDone
+	}()
+
 	jobsRepo := repositories.NewJobs(pool)
 	queue := services.NewQueue(jobsRepo, jobs.Defaults())
 	limits := services.NewLimits(repositories.NewRateBuckets(pool), jobsRepo, cfg.API.QueueCeiling)
 	handler := routes.New(
 		controllers.NewJobs(queue, limits),
-		controllers.NewSchedules(services.NewSchedules(repositories.NewSchedules(pool), jobs.Defaults())),
+		controllers.NewSchedules(services.NewSchedules(schedules, jobs.Defaults())),
 		controllers.NewTeams(teams),
 		auth,
 		cfg.API.AdminToken,

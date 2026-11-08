@@ -25,6 +25,9 @@ type API struct {
 	DevAPIKey string
 	// Submits get 503 once this many jobs are waiting to run. 0 turns it off.
 	QueueCeiling int
+	// SchedulerTick is how often the leading api fires due schedules, and how
+	// often the others try to take over the lead.
+	SchedulerTick time.Duration
 }
 
 type Worker struct {
@@ -51,10 +54,11 @@ func Load() (Config, error) {
 		HTTPAddr:    l.str("HTTP_ADDR", ":8080"),
 		LogFormat:   l.str("LOG_FORMAT", "text"),
 		API: API{
-			AdminToken:   l.str("ADMIN_TOKEN", ""),
-			AuthCacheTTL: l.duration("AUTH_CACHE_TTL", 5*time.Second),
-			DevAPIKey:    l.str("DEV_API_KEY", ""),
-			QueueCeiling: l.int("QUEUE_CEILING", 100_000),
+			AdminToken:    l.str("ADMIN_TOKEN", ""),
+			AuthCacheTTL:  l.duration("AUTH_CACHE_TTL", 5*time.Second),
+			DevAPIKey:     l.str("DEV_API_KEY", ""),
+			QueueCeiling:  l.int("QUEUE_CEILING", 100_000),
+			SchedulerTick: l.duration("SCHEDULER_TICK", time.Second),
 		},
 		Worker: Worker{
 			Concurrency:       l.int("WORKER_CONCURRENCY", 4),
@@ -84,6 +88,9 @@ func Load() (Config, error) {
 	}
 	if cfg.API.QueueCeiling < 0 {
 		l.fail("QUEUE_CEILING", fmt.Errorf("must not be negative"))
+	}
+	if cfg.API.SchedulerTick <= 0 {
+		l.fail("SCHEDULER_TICK", fmt.Errorf("must be positive"))
 	}
 	return cfg, l.err
 }
