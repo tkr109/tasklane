@@ -14,8 +14,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/tkr109/tasklane/config"
+	"github.com/tkr109/tasklane/controllers"
+	"github.com/tkr109/tasklane/jobs"
 	"github.com/tkr109/tasklane/repositories"
 	"github.com/tkr109/tasklane/routes"
+	"github.com/tkr109/tasklane/services"
 )
 
 const usage = "usage: tasklane api|worker|scaler"
@@ -81,9 +84,15 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 	}
 	defer pool.Close()
 
+	teamID, err := repositories.NewTeams(pool).IDByName(ctx, "default")
+	if err != nil {
+		return fmt.Errorf("look up default team: %w", err)
+	}
+	queue := services.NewQueue(repositories.NewJobs(pool), jobs.Defaults())
+
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           routes.New(pool.Ping),
+		Handler:           routes.New(controllers.NewJobs(queue, teamID), pool.Ping),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
