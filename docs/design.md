@@ -66,13 +66,16 @@ There is no `utils/` folder; a helper lives next to the code that uses it.
 
 - `plans`: name, share weight, max concurrent workers, jobs per minute, burst
 - `teams`: name, plan_id
-- `api_keys`: team_id, prefix, sha256 hash, revoked_at
+- `api_keys`: team_id, prefix (for display), sha256 hash (unique, what a key is looked up
+  by), revoked_at
 - `jobs`: team_id, type, payload (jsonb), priority, status, attempts, max_attempts,
   run_at, lease_until, locked_by, idempotency_key, progress, last_error, timestamps
 - `job_events`: job_id, kind, message, at (the timeline)
 - `schedules`: team_id, cron expression, job template, next_run_at
 - `workers`: id, host, started_at, last_seen_at (heartbeat). There is no current-job column:
   a worker's running jobs are the ones whose `jobs.locked_by` is its id.
+- `team_usage`: team_id, running (jobs running now), served (a decaying count of jobs
+  started), served_at. Used for fair share.
 - `rate_buckets`: key (team or job type), tokens, updated_at
 
 Redis can come back later behind the same service interfaces if load tests show Postgres is
@@ -95,10 +98,11 @@ per-minute rate.
 
 ## Core behaviour
 
-**Grabbing a job.** A worker runs one query that picks the next job with
-`FOR UPDATE SKIP LOCKED`, sets `status = running`, `lease_until = now() + lease`, and
-`locked_by = worker id`. Workers wake on Postgres `LISTEN/NOTIFY` instead of polling hard
-(a slow poll stays as a fallback).
+**Grabbing a job.** A worker reads the backlog, picks whose turn it is (see Fair share),
+and claims a job with `FOR UPDATE SKIP LOCKED`, setting `status = running`,
+`lease_until = now() + lease`, and `locked_by = worker id`. Workers wake on Postgres
+`LISTEN/NOTIFY` instead of polling hard (a slow poll stays as a fallback), and also look
+again whenever one of their jobs finishes.
 
 **Leases and crashes.** A running worker extends its lease every few seconds. If a worker
 dies, its lease runs out and a reaper puts the job back to `queued`. No job is lost. The
@@ -118,16 +122,64 @@ failure.
 **Clean shutdown.** On SIGTERM a worker stops taking new jobs, finishes the ones it has (up to
 a grace period), then exits. Anything unfinished falls back via the lease.
 
-**Priorities.** 0 (low) to 9 (urgent). Effective priority grows with wait time (aging) so low
-jobs still run.
+**Priorities.** 0 (low) to 9 (urgent), 5 by default. Effective priority grows with wait
+time (aging) so low jobs still run: `priority + waited / PRIORITY_AGING_STEP`. With the
+default step of 30s, a priority 0 job that has waited 4.5 minutes ties a fresh 9.
 
-**Fairness.** Teams take turns. Each plan has a share weight (see Plans).
-The grab query picks the team that is furthest behind its fair share, then the best job
-inside that team. A team at its plan's worker cap is skipped.
+**Fairness.** Teams take turns, weighted by their plan's share weight. A team at its plan's
+worker cap is skipped. See Fair share below.
 
 **Scheduling.** Delayed jobs are just `run_at` in the future. Repeating jobs come from
 `schedules`. Only one scheduler fires them: whoever holds a Postgres advisory lock. If that
 process dies, the lock frees and another takes over.
+
+## Fair share
+
+A grab is two queries with a decision in Go between them.
+
+1. **Backlog**, no locks. For every team under its worker cap: its weight, its served count,
+   and the oldest runnable job at each priority level. That is one probe per level on the
+   `(team_id, priority, run_at, id)` index, so it stays cheap however long the queue is.
+2. **Pick.** A team's share is its served count divided by its plan weight. The lowest share
+   is furthest behind, so teams are tried in that order. Inside a team, the level whose
+   oldest job has the highest aged priority wins.
+3. **Grab** from that team and level, in one statement: lock the oldest job there with
+   `SKIP LOCKED`, bump the team's `team_usage` row only if `running < max_workers`, and mark
+   the job running only if that bump happened. If the level ran dry or the team filled up in
+   the meantime, the next team in line is tried.
+
+Why this holds with many workers grabbing at once:
+
+- `SKIP LOCKED` means no two workers claim the same job and none waits on another's job row.
+  Workers that pick the same team and level just take the next oldest job.
+- Grabs for the same team queue on its `team_usage` row. After the wait, Postgres rechecks
+  `running < max_workers` against the latest committed count, so a team can't pass its cap.
+- `running` is kept by a trigger on `jobs.status`, so every way in and out of `running`
+  (grab, finish, retry, reaper) updates it in the same transaction.
+- `served` decays by a factor of e every `FAIR_SHARE_WINDOW` (a minute), so it roughly counts
+  the last minute. Old work doesn't count against a team for long, and a team coming back
+  from idle catches up for at most about a window.
+
+When every team is busy, always serving the lowest served-per-weight keeps those numbers
+level, so served counts follow the 1:3:10 weights. Caps still apply on top: a team whose
+fair share is more slots than its cap stops at the cap, and the spare slots go to the others.
+
+Lock order: a grab locks a job row and then its team's row; a finish does the same through
+the trigger. Nothing waits on a job row while holding a team row, so grabs and finishes
+can't deadlock. Two reapers freeing jobs of several teams at the same moment can, and
+Postgres then cancels one, which retries on its next tick.
+
+## Auth
+
+Apps call the API with `Authorization: Bearer tk_live_...`. Only a sha256 hash of each key
+and a short display prefix are stored; the full key is shown once, when it is created. The
+middleware resolves the key to its team and plan and caches that for `AUTH_CACHE_TTL` (5s),
+so a revoked key or a plan switch shows within that time. Scheduling reads plans straight
+from Postgres, so a plan switch changes weights and caps on the next grab.
+
+The admin endpoints the dashboard uses take a single shared `ADMIN_TOKEN` the same way. It is
+a demo, so there are no users or logins. Local runs set `DEV_API_KEY`, which the api
+registers for the default team on startup.
 
 ## Rate limits
 
@@ -170,17 +222,23 @@ let a reconnecting browser catch up.
 ## API (first cut)
 
 ```
-POST   /api/jobs              submit (Idempotency-Key supported)
-POST   /api/jobs/batch        submit many
-GET    /api/jobs              list, cursor pagination, filters
-GET    /api/jobs/{id}         detail + timeline
+POST   /api/jobs                               submit (Idempotency-Key supported)
+POST   /api/jobs/batch                         submit many
+GET    /api/jobs                               list, cursor pagination, filters
+GET    /api/jobs/{id}                          detail + timeline
 POST   /api/jobs/{id}/cancel
 POST   /api/jobs/{id}/retry
-GET    /api/schedules         list / create / delete
+GET    /api/schedules                          list / create / delete
 GET    /api/workers
 GET    /api/stats
-GET    /api/teams             admin: list, switch plan, manage keys
-GET    /api/events            SSE stream
+GET    /api/plans                              admin
+GET    /api/teams                              admin: teams with plan and usage
+POST   /api/teams                              admin: create {name, plan}
+PUT    /api/teams/{id}/plan                    admin: switch plan {plan}
+GET    /api/teams/{id}/keys                    admin
+POST   /api/teams/{id}/keys                    admin: returns the full key once
+POST   /api/teams/{id}/keys/{key}/revoke       admin
+GET    /api/events                             SSE stream
 GET    /healthz
 ```
 
@@ -188,7 +246,7 @@ GET    /healthz
 
 - Unit tests for backoff, fairness picking, scaler decisions, rate limit math.
 - Integration tests against a real Postgres (testcontainers): double-grab, lease
-  expiry, idempotency, leader failover.
+  expiry, idempotency, starvation, plan weights, worker caps, auth, leader failover.
 - CI runs `go vet`, tests, and the web build on every push.
 
 ## Build order
