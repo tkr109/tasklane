@@ -540,13 +540,17 @@ export class World {
       if (!job) break
       if (job.type === 'email.send' && Math.random() < 0.18) {
         const wait = rand(0.5, 1.6)
-        job.run_at = iso(now + wait * SECOND)
-        this.addEvent(
-          job,
-          'rate_limited',
-          now,
-          `pushed back ${wait.toFixed(1)}s: email.send limit of 10/s reached, this does not use a retry`,
-        )
+        // Like the API: the grab happens, then the type's limit sends the job back and returns the attempt.
+        this.start(job, worker.id, now)
+        Object.assign(job, {
+          status: 'queued',
+          attempts: job.attempts - 1,
+          run_at: iso(now + wait * SECOND),
+          locked_by: undefined,
+          lease_until: undefined,
+        })
+        this.addEvent(job, 'throttled', now, `email.send is at its limit of 10/s, back in ${Math.round(wait * 1000)}ms`)
+        this.emitJob(job)
         continue
       }
       this.start(job, worker.id, now)
@@ -555,7 +559,11 @@ export class World {
 
     if (Math.random() < 0.32) {
       const team = this.teamByName(DASHBOARD_TEAM)
-      this.createJob(team, pick(team.seed.types), now, { track: true })
+      const scheduled = Math.random() < 0.1
+      this.createJob(team, scheduled ? 'email.send' : pick(team.seed.types), now, {
+        track: true,
+        scheduleId: scheduled ? 3 : undefined,
+      })
     }
     this.pruneJobs()
   }
@@ -614,7 +622,7 @@ export class World {
     team: MockTeam,
     type: string,
     createdAt: number,
-    opts: { priority?: number; maxAttempts?: number; payload?: unknown; track: boolean },
+    opts: { priority?: number; maxAttempts?: number; payload?: unknown; track: boolean; scheduleId?: number },
   ): MockJob {
     const job: MockJob = {
       id: this.nextJobId++,
@@ -631,8 +639,14 @@ export class World {
       updated_at: iso(createdAt),
       timeline: [],
     }
-    if (Math.random() < 0.55) job.idempotency_key = `${type.split('.')[0]}-${hex(8)}`
-    this.addEvent(job, 'created', createdAt)
+    if (opts.scheduleId) {
+      // A schedule's job is keyed by its id and the tick it fired for.
+      job.idempotency_key = `schedule:${opts.scheduleId}:${Math.floor(createdAt / MINUTE) * 60}`
+      this.addEvent(job, 'created', createdAt, `queued by ${job.idempotency_key}`)
+    } else {
+      if (Math.random() < 0.55) job.idempotency_key = `${type.split('.')[0]}-${hex(8)}`
+      this.addEvent(job, 'created', createdAt)
+    }
     if (opts.track) {
       this.jobs.set(job.id, job)
       this.emitJob(job)

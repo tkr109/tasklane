@@ -1,6 +1,6 @@
 import type { JobEvent } from '../../api/types'
 import { formatClock } from '../../lib/format'
-import { EVENT_LABELS } from '../../lib/jobs'
+import { EVENT_LABELS, eventMessage } from '../../lib/jobs'
 
 const FILLED_KINDS = new Set(['created', 'succeeded', 'dead'])
 
@@ -14,6 +14,7 @@ export function TimelineCard({ events }: { events: JobEvent[] }) {
       <ul className="timeline">
         {events.map((event, i) => {
           const filled = i === events.length - 1 || FILLED_KINDS.has(event.kind)
+          const message = eventMessage(event)
           return (
             <li key={event.id} className={`k-${event.kind}${filled ? ' filled' : ''}`}>
               <span className="dot" />
@@ -21,7 +22,7 @@ export function TimelineCard({ events }: { events: JobEvent[] }) {
                 <b>{EVENT_LABELS[event.kind] ?? event.kind}</b>
                 <span>{formatClock(event.at)}</span>
               </div>
-              {event.message && <p>{event.message}</p>}
+              {message && <p>{message}</p>}
             </li>
           )
         })}

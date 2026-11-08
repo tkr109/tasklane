@@ -1,5 +1,5 @@
 import type { Job, JobEvent, JobStatus } from '../api/types'
-import { formatDuration, secondsUntil } from './format'
+import { formatClock, formatDuration, secondsUntil } from './format'
 
 export const canRetry = (status: JobStatus) => status === 'failed' || status === 'dead' || status === 'cancelled'
 
@@ -49,7 +49,15 @@ export const EVENT_LABELS: Record<string, string> = {
   dead: 'Moved to dead',
   cancelled: 'Cancelled',
   lease_expired: 'Lease ran out',
-  rate_limited: 'Pushed back',
+  throttled: 'Held by rate limit',
+}
+
+const SCHEDULED = /^queued by schedule:(\d+):(\d+)$/
+
+export function eventMessage(event: JobEvent): string | undefined {
+  const scheduled = event.kind === 'created' ? SCHEDULED.exec(event.message ?? '') : null
+  if (scheduled) return `Queued by schedule ${scheduled[1]} for its ${formatClock(Number(scheduled[2]) * 1000)} run`
+  return event.message
 }
 
 export interface Attempt {
@@ -97,6 +105,11 @@ export function attemptsFromTimeline(timeline: JobEvent[]): Attempt[] {
         break
       case 'lease_expired':
         close('lease expired', event.at, event.message || null)
+        break
+      // The type's rate limit sent the job straight back and gave the attempt back too.
+      case 'throttled':
+        if (open) attempts.pop()
+        open = null
         break
     }
   }

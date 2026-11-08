@@ -185,7 +185,7 @@
 .k-cancelled {
   --c: var(--cancelled);
 }
-.k-rate_limited {
+.k-throttled {
   --c: var(--accent);
 }
 
