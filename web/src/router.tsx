@@ -8,6 +8,8 @@ const handle = (title: string): RouteHandle => ({ title })
 export const router = createBrowserRouter([
   {
     element: <Layout />,
+    // Shown for the moment the first page's code is loading.
+    hydrateFallbackElement: <div className="app" />,
     children: [
       {
         index: true,
