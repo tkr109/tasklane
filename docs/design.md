@@ -6,7 +6,8 @@ watches the queue and adds or removes worker containers on its own.
 
 ## Goals
 
-- Jobs are never lost and never run twice, even when workers crash mid-job.
+- Jobs are never lost, even when workers crash mid-job. Delivery is at least once, so a job
+  can run again (see Leases and crashes).
 - One noisy team can't starve the others.
 - Workers scale up under load and back down when the queue drains.
 - Everything runs locally with one command (`make up`).
@@ -117,6 +118,12 @@ again whenever one of their jobs finishes.
 **Leases and crashes.** A running worker extends its lease every few seconds. If a worker
 dies, its lease runs out and a reaper puts the job back to `queued`. No job is lost. The
 reaper also deletes worker rows that missed 10 heartbeats in a row.
+
+That makes delivery at least once, not exactly once. A worker that dies after a side effect,
+or stalls past its lease, leaves a job the reaper hands to someone else, and it runs again.
+Idempotency keys stop duplicate submits, not repeat runs, so handlers should be safe to repeat.
+A webhook carries no job id, and its signature changes with each attempt's timestamp, so a
+receiver that must act once needs an id of its own in the body to dedupe on.
 
 **Duplicates.** Submits may carry an `Idempotency-Key` header. A unique index on
 `(team_id, idempotency_key)` means a repeat returns the original job instead of a new one.
