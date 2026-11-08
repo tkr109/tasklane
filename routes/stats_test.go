@@ -169,7 +169,7 @@ func TestTheScalerShowsInStatsAndWorkers(t *testing.T) {
 	}
 
 	for _, d := range []models.Decision{
-		{Action: "up", From: 2, To: 10, Reason: "10000 runnable, oldest wait 1s; 10 at most"},
+		{Action: "up", From: 2, To: 10, Reason: "10000 runnable, oldest wait 1s; at most 10"},
 		{Action: "hold", From: 10, To: 10, Reason: "wants 2: waiting out the 20s cool-down before scaling down"},
 		{Action: "down", From: 10, To: 9, Reason: "queue empty, cool-down passed"},
 	} {

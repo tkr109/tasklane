@@ -52,7 +52,7 @@ func TestScalerScalesUpAtOnce(t *testing.T) {
 	}
 
 	d = p.decide(now.Add(2*time.Second), models.Demand{Runnable: 20_000, Slots: plenty}, 8)
-	if d.action != "up" || d.to != 10 || !strings.HasSuffix(d.reason, "; 10 at most") {
+	if d.action != "up" || d.to != 10 || !strings.HasSuffix(d.reason, "; at most 10") {
 		t.Fatalf("decision %+v, want up to the maximum", d)
 	}
 }

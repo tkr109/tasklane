@@ -38,13 +38,13 @@ func (p *policy) target(d models.Demand) (int, string) {
 	n, note := ceilDiv(d.Runnable, p.jobsPerWorker), ""
 	// Workers past what the teams' caps can keep busy would sit idle.
 	if busy := ceilDiv(d.Slots, p.concurrency); busy < n {
-		n, note = busy, fmt.Sprintf("the teams' plans let %d run at once", d.Slots)
+		n, note = busy, fmt.Sprintf("the teams' plans run %d at once", d.Slots)
 	}
 	switch {
 	case n > p.max:
-		n, note = p.max, fmt.Sprintf("%d at most", p.max)
+		n, note = p.max, fmt.Sprintf("at most %d", p.max)
 	case n < p.min:
-		n, note = p.min, fmt.Sprintf("%d at least", p.min)
+		n, note = p.min, fmt.Sprintf("at least %d", p.min)
 	}
 	return n, note
 }
