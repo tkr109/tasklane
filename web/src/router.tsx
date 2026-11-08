@@ -3,7 +3,7 @@ import { Layout, type RouteHandle } from './components/Layout'
 import { JobDetailPage } from './pages/job/JobDetailPage'
 import { JobsPage } from './pages/jobs/JobsPage'
 import { NotFoundPage } from './pages/NotFoundPage'
-import { OverviewPage } from './pages/OverviewPage'
+import { OverviewPage } from './pages/overview/OverviewPage'
 
 const handle = (title: string): RouteHandle => ({ title })
 
