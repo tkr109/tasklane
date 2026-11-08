@@ -321,6 +321,51 @@ func (r *Jobs) MarkDead(ctx context.Context, id int64, workerID string, errMsg s
 		id, workerID, errMsg)
 }
 
+// Hold puts a job the worker has just grabbed, but may not start yet because of
+// its type's rate limit, back in the queue for delay. The grab counted an attempt
+// and a turn of the team's fair share; the job never ran, so both are given back.
+func (r *Jobs) Hold(ctx context.Context, id int64, workerID string, delay time.Duration, reason string) error {
+	return r.finish(ctx, `
+		with held as (
+			update jobs
+			set status = 'queued', attempts = attempts - 1, run_at = now() + make_interval(secs => $3),
+				throttled_at = now(), lease_until = null, locked_by = null, updated_at = now()
+			where id = $1 and locked_by = $2 and status = 'running'
+			returning id, team_id
+		), unserved as (
+			update team_usage u set served = greatest(u.served - 1, 0)
+			from held where u.team_id = held.team_id
+		)
+		insert into job_events (job_id, kind, message) select id, 'throttled', $4 from held`,
+		id, workerID, delay.Seconds(), reason)
+}
+
+// HeldByLimit counts the waiting jobs of every type whose rate limit pushed a job
+// back in the given window. While a type is at its limit, more workers won't run
+// any of its jobs sooner.
+func (r *Jobs) HeldByLimit(ctx context.Context, within time.Duration) (map[string]int, error) {
+	rows, err := r.db.Query(ctx, `
+		select type, count(*) from jobs
+		where status in ('queued', 'failed') and type in (
+			select type from jobs where throttled_at > now() - make_interval(secs => $1)
+		)
+		group by type`,
+		within.Seconds())
+	if err != nil {
+		return nil, err
+	}
+	counts := map[string]int{}
+	var (
+		jobType string
+		n       int
+	)
+	_, err = pgx.ForEachRow(rows, []any{&jobType, &n}, func() error {
+		counts[jobType] = n
+		return nil
+	})
+	return counts, err
+}
+
 func (r *Jobs) finish(ctx context.Context, query string, args ...any) error {
 	tag, err := r.db.Exec(ctx, query, args...)
 	if err != nil {
