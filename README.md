@@ -241,7 +241,9 @@ no backend at all.
 To run the processes outside Docker, `make db` starts only Postgres, then `make run-api`,
 `make run-worker` and `make run-scaler` (which logs what it would do instead of starting
 containers). Configuration is all environment variables with defaults in
-[config/config.go](config/config.go).
+[config/config.go](config/config.go). Workers the scaler starts get only the variables named in
+`WORKER_ENV`; the default list leaves out the poll, reap and heartbeat intervals,
+`PRIORITY_AGING_STEP` and `FAIR_SHARE_WINDOW`, so add a name there to change one for them.
 
 Submit a job:
 
