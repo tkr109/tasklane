@@ -1,0 +1,80 @@
+.groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.group {
+  transition:
+    opacity 0.35s,
+    transform 0.35s;
+}
+
+.group.leaving {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.group-h {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 18px;
+  flex-wrap: wrap;
+}
+
+.group-h .err {
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.latest-err {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.group-h .cnt {
+  font-weight: 600;
+  color: var(--dead);
+  font-variant-numeric: tabular-nums;
+}
+
+.group-meta {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 5px;
+  align-items: center;
+}
+
+.group-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.group .tbl-wrap {
+  border-top: 1px solid var(--border-soft);
+}
+
+.spark {
+  display: block;
+}
+
+.spark path {
+  fill: none;
+  stroke: var(--dead);
+  stroke-width: 1.5;
+}
+
+.spark path.area {
+  fill: color-mix(in srgb, var(--dead) 12%, transparent);
+  stroke: none;
+}

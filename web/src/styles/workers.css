@@ -1,0 +1,132 @@
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.stat {
+  padding: 13px 16px;
+}
+
+.stat .k {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.stat .v {
+  font-size: 22px;
+  font-weight: 600;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.workers-card {
+  margin-bottom: 16px;
+}
+
+.heartbeat {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-variant-numeric: tabular-nums;
+}
+
+.heartbeat i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.heartbeat.late i {
+  background: var(--failed);
+}
+
+.worker-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.worker-state i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--workers);
+}
+
+.worker-state.starting i {
+  background: repeating-linear-gradient(135deg, var(--workers) 0 2px, transparent 2px 4px);
+  border: 1px solid var(--workers);
+}
+
+.worker-state.draining i {
+  background: color-mix(in srgb, var(--workers) 35%, transparent);
+}
+
+.worker-state.starting,
+.worker-state.draining {
+  color: var(--muted);
+}
+
+.running-jobs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.job-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: var(--track);
+  color: var(--muted);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.job-chip:hover {
+  color: var(--text);
+}
+
+.chip-bar {
+  width: 28px;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--running) 18%, transparent);
+  overflow: hidden;
+}
+
+.chip-bar i {
+  display: block;
+  height: 100%;
+  background: var(--running);
+  transition: width 0.4s ease-out;
+}
+
+.tbl tr.leaving td {
+  opacity: 0.55;
+}
+
+.tbl tr.arriving td {
+  animation: fresh 1.6s ease-out;
+}
+
+@media (max-width: 1180px) {
+  .stat-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 820px) {
+  .stat-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
