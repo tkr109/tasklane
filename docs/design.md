@@ -278,8 +278,9 @@ acting before another takes over.
    has ends a cool-down, so a queue that fills and empties doesn't flap. Times are compared
    with half a round of slack, or a round that ran a few ms late would push a 3s step to 4s.
 4. Stores an `up`, `down` or `hold` in `scaler_decisions`, publishes it as a `decision` event,
-   and writes its status row, which the overview and the `stats` event carry as `scaler`
-   (all zeros until a scaler has reported).
+   and writes its status row, which the overview and the `stats` event carry as `scaler`.
+   Once the status is three rounds old, and at least 5s, `scaler` is `null`, so a scaler that
+   stopped or crashed shows as not running.
 
 **Why caps bound the target.** A team can't run more jobs at once than its plan's cap, however
 many workers there are. With one enterprise team flooding (cap 10) and workers running four

@@ -112,7 +112,7 @@ func TestTheBiggestEventsFit(t *testing.T) {
 	limit := 1.0 / 3
 	var tick models.StatsTick
 	at := time.Now()
-	tick.Scaler = models.ScalerStatus{
+	tick.Scaler = &models.ScalerStatus{
 		Current: math.MaxInt32, Target: math.MaxInt32, Min: math.MaxInt32, Max: math.MaxInt32,
 		JobsPerWorker: math.MaxInt32, IntervalSeconds: 1.0 / 3, CooldownSeconds: 1.0 / 3, StepDownSeconds: 1.0 / 3,
 		ScaleDownAt: &at,

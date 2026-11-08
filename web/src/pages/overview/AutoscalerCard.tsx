@@ -14,7 +14,7 @@ const BUSY_QUEUE = 1000
 
 function scalerState(
   { workers, counts }: Stats,
-  scaler: ScalerStatus | undefined,
+  scaler: ScalerStatus | null,
   now: number,
 ): { tone: string; text: string } {
   if (!scaler) return { tone: 'off', text: 'Scaler not running. The workers that are up keep working.' }

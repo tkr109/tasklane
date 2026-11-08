@@ -477,7 +477,8 @@ func (r *Jobs) Demand(ctx context.Context, skip []string) (models.Demand, error)
 }
 
 // Overview counts what the dashboard's overview shows, in one round trip. Every
-// count reads a partial index, the queued and failed jobs, or a small table.
+// count reads a partial index, the queued and failed jobs, or a small table. The
+// scaler's status is left out once it has missed three rounds, and at least 5s.
 func (r *Jobs) Overview(ctx context.Context) (models.Snapshot, error) {
 	var s models.Snapshot
 	err := r.db.QueryRow(ctx, `
@@ -493,7 +494,8 @@ func (r *Jobs) Overview(ctx context.Context) (models.Snapshot, error) {
 			(select count(*) from workers where state = 'running'),
 			(select count(*) from workers where state = 'starting'),
 			(select count(*) from workers where state = 'draining'),
-			coalesce((select status from scaler_status), '{}')
+			(select status from scaler_status
+				where updated_at > now() - make_interval(secs => greatest(3 * (status->>'interval_seconds')::float8, 5)))
 		from jobs
 		where status in ('queued', 'failed')`).Scan(
 		&s.Counts.Queued, &s.Counts.Failed, &s.Runnable, &s.OldestWaitSeconds, &s.Counts.Running,

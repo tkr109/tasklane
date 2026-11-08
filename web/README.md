@@ -56,5 +56,5 @@ The stream's events are typed in `src/api/live.ts`. `job`, `worker`, `stats` and
 `team_usage` patch the query cache in place, `decision` adds to the scaler log and `reset`
 refetches everything. While the stream is down, every query polls every five seconds.
 
-Stats carry a `scaler` field only while a scaler runs; without one the overview and workers
-pages say so and keep working.
+Stats carry the scaler's status as `scaler`, which is `null` while no scaler runs or once one
+has missed three rounds; the overview and workers pages then say so and keep working.

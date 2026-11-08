@@ -150,8 +150,8 @@ func TestTheScalerShowsInStatsAndWorkers(t *testing.T) {
 	ctx := context.Background()
 	scaler := repositories.NewScaler(pgPool)
 
-	if empty := a.stats().Scaler; empty != (models.ScalerStatus{}) {
-		t.Errorf("before any scaler ran: %+v", empty)
+	if none := a.stats().Scaler; none != nil {
+		t.Errorf("before any scaler ran: %+v", none)
 	}
 	at := time.Date(2026, 11, 8, 10, 0, 20, 0, time.UTC)
 	status := models.ScalerStatus{Current: 10, Target: 2, Min: 2, Max: 10, JobsPerWorker: 500, IntervalSeconds: 2,
@@ -160,12 +160,20 @@ func TestTheScalerShowsInStatsAndWorkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := a.stats().Scaler
-	if got.ScaleDownAt == nil || !got.ScaleDownAt.Equal(at) {
-		t.Fatalf("scale down at %v, want %v", got.ScaleDownAt, at)
+	if got == nil || got.ScaleDownAt == nil || !got.ScaleDownAt.Equal(at) {
+		t.Fatalf("scaler %+v, want one that scales down at %v", got, at)
 	}
 	got.ScaleDownAt = status.ScaleDownAt
-	if got != status {
-		t.Errorf("scaler %+v, want %+v", got, status)
+	if *got != status {
+		t.Errorf("scaler %+v, want %+v", *got, status)
+	}
+
+	// Six rounds of 2s is past the three it may miss.
+	if _, err := pgPool.Exec(ctx, `update scaler_status set updated_at = now() - interval '6 seconds'`); err != nil {
+		t.Fatal(err)
+	}
+	if stale := a.stats().Scaler; stale != nil {
+		t.Errorf("a scaler that stopped reporting still shows: %+v", stale)
 	}
 
 	for _, d := range []models.Decision{

@@ -136,14 +136,12 @@ func TestScalerFollowsTheQueue(t *testing.T) {
 	queueJobs(t, pool, "sleep", 175)
 	want := models.ScalerStatus{Current: 4, Target: 4, Min: 1, Max: 4, JobsPerWorker: 10, IntervalSeconds: 0.05,
 		CooldownSeconds: 0.3, StepDownSeconds: 0.1}
-	var status models.ScalerStatus
 	waitUntil(t, 5*time.Second, "four workers", func() bool {
 		stats, err := repositories.NewJobs(pool).Overview(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		status = stats.Scaler
-		return status == want
+		return stats.Scaler != nil && *stats.Scaler == want
 	})
 	if n := len(instances(t, driver)); n != 4 {
 		t.Fatalf("%d workers, want 4", n)
