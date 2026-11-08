@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -93,7 +94,7 @@ func newAPI(t *testing.T, cacheTTL time.Duration) *api {
 	auth := services.NewAuth(keys, cacheTTL)
 	handler := New(
 		controllers.NewJobs(services.NewQueue(repositories.NewJobs(pool), jobs.Defaults())),
-		controllers.NewTeams(services.NewTeams(repositories.NewTeams(pool), keys)),
+		controllers.NewTeams(services.NewTeams(repositories.NewTeams(pool), keys, auth)),
 		auth, adminToken, pool.Ping,
 	)
 	srv := httptest.NewServer(handler)
@@ -197,8 +198,11 @@ func TestKeysScopeJobsToTheirTeam(t *testing.T) {
 
 func TestBadAndRevokedKeysGet401(t *testing.T) {
 	const ttl = 300 * time.Millisecond
-	a := newAPI(t, ttl)
+	a := newAPI(t, time.Minute)
 	acme, key := a.createTeam("acme", "free")
+	// otherAPI stands in for a second API process with its own cache.
+	otherAPI := services.NewAuth(repositories.NewKeys(pgPool), ttl)
+	ctx := context.Background()
 
 	for name, token := range map[string]string{
 		"no key":          "",
@@ -217,12 +221,19 @@ func TestBadAndRevokedKeysGet401(t *testing.T) {
 	if code := a.call("GET", "/api/jobs", key.Key, nil, nil); code != http.StatusOK {
 		t.Fatalf("live key: status %d", code)
 	}
+	if _, err := otherAPI.Team(ctx, key.Key); err != nil {
+		t.Fatalf("live key on the other API: %v", err)
+	}
 	revoke := teamPath(acme.ID) + "/keys/" + strconv.FormatInt(key.ID, 10) + "/revoke"
 	if code := a.call("POST", revoke, adminToken, nil, nil); code != http.StatusOK {
 		t.Fatalf("revoke: status %d", code)
 	}
-	waitUntil(t, ttl+time.Second, "the revoked key to be refused", func() bool {
-		return a.call("GET", "/api/jobs", key.Key, nil, nil) == http.StatusUnauthorized
+	if code := a.call("GET", "/api/jobs", key.Key, nil, nil); code != http.StatusUnauthorized {
+		t.Fatalf("revoked key on the API that revoked it: status %d, want 401 at once", code)
+	}
+	waitUntil(t, ttl+time.Second, "the other API to refuse the revoked key", func() bool {
+		_, err := otherAPI.Team(ctx, key.Key)
+		return errors.Is(err, services.ErrUnauthorized)
 	})
 }
 
@@ -334,7 +345,7 @@ func TestAdminRoutes(t *testing.T) {
 
 func TestDevKeyWorksForTheDefaultTeam(t *testing.T) {
 	a := newAPI(t, time.Minute)
-	teams := services.NewTeams(repositories.NewTeams(pgPool), repositories.NewKeys(pgPool))
+	teams := services.NewTeams(repositories.NewTeams(pgPool), repositories.NewKeys(pgPool), a.auth)
 	ctx := context.Background()
 
 	const devKey = "tk_live_localdev"

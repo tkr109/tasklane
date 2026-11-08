@@ -24,10 +24,11 @@ const (
 type Teams struct {
 	teams *repositories.Teams
 	keys  *repositories.Keys
+	auth  *Auth
 }
 
-func NewTeams(teams *repositories.Teams, keys *repositories.Keys) *Teams {
-	return &Teams{teams: teams, keys: keys}
+func NewTeams(teams *repositories.Teams, keys *repositories.Keys, auth *Auth) *Teams {
+	return &Teams{teams: teams, keys: keys, auth: auth}
 }
 
 func (s *Teams) Plans(ctx context.Context) ([]models.Plan, error) {
@@ -98,6 +99,9 @@ func (s *Teams) RevokeKey(ctx context.Context, teamID, keyID int64) (models.APIK
 	key, err := s.keys.Revoke(ctx, teamID, keyID)
 	if errors.Is(err, repositories.ErrNotFound) {
 		return key, errKeyNotFound
+	}
+	if err == nil {
+		s.auth.forgetTeam(teamID)
 	}
 	return key, err
 }

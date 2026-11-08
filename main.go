@@ -85,7 +85,8 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 	defer pool.Close()
 
 	keys := repositories.NewKeys(pool)
-	teams := services.NewTeams(repositories.NewTeams(pool), keys)
+	auth := services.NewAuth(keys, cfg.API.AuthCacheTTL)
+	teams := services.NewTeams(repositories.NewTeams(pool), keys, auth)
 	if cfg.API.DevAPIKey != "" {
 		if err := teams.EnsureDevKey(ctx, cfg.API.DevAPIKey); err != nil {
 			return fmt.Errorf("dev api key: %w", err)
@@ -100,7 +101,7 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 	handler := routes.New(
 		controllers.NewJobs(queue),
 		controllers.NewTeams(teams),
-		services.NewAuth(keys, cfg.API.AuthCacheTTL),
+		auth,
 		cfg.API.AdminToken,
 		pool.Ping,
 	)
