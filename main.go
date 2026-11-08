@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -97,27 +98,28 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 		slog.Warn("ADMIN_TOKEN is not set, admin endpoints are off")
 	}
 
-	// Every api runs a scheduler; the one holding the advisory lock fires schedules.
+	jobsRepo := repositories.NewJobs(pool)
 	schedules := repositories.NewSchedules(pool)
+	events := services.NewEvents(repositories.NewEvents(pool))
+	// Every api runs a scheduler; the one holding the advisory lock fires schedules.
 	scheduler := services.NewScheduler(schedules, cfg.API.SchedulerTick)
-	schedulerCtx, stopScheduler := context.WithCancel(ctx)
-	schedulerDone := make(chan struct{})
-	go func() {
-		defer close(schedulerDone)
-		scheduler.Run(schedulerCtx)
-	}()
+
+	bgCtx, stopBackground := context.WithCancel(ctx)
+	var background sync.WaitGroup
+	background.Go(func() { scheduler.Run(bgCtx) })
+	background.Go(func() { events.Run(bgCtx) })
 	defer func() {
-		stopScheduler()
-		<-schedulerDone
+		stopBackground()
+		background.Wait()
 	}()
 
-	jobsRepo := repositories.NewJobs(pool)
 	queue := services.NewQueue(jobsRepo, jobs.Defaults())
 	limits := services.NewLimits(repositories.NewRateBuckets(pool), jobsRepo, cfg.API.QueueCeiling)
 	handler := routes.New(
 		controllers.NewJobs(queue, limits),
 		controllers.NewSchedules(services.NewSchedules(schedules, jobs.Defaults(), cfg.API.MaxSchedulesPerTeam)),
 		controllers.NewTeams(teams),
+		controllers.NewEvents(events),
 		auth,
 		cfg.API.AdminToken,
 		pool.Ping,
@@ -127,6 +129,8 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	// Event streams never go idle, so Shutdown would wait them out.
+	srv.RegisterOnShutdown(events.Close)
 
 	errc := make(chan error, 1)
 	go func() {

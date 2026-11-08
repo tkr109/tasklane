@@ -81,12 +81,13 @@ func testDB(t *testing.T) *pgxpool.Pool {
 	return pgPool
 }
 
-// api is the whole HTTP stack on a test server, plus the Auth behind it so tests
-// can look at what it has cached.
+// api is the whole HTTP stack on a test server, plus the services behind it that
+// tests look into.
 type api struct {
-	t    *testing.T
-	srv  *httptest.Server
-	auth *services.Auth
+	t      *testing.T
+	srv    *httptest.Server
+	auth   *services.Auth
+	events *services.Events
 }
 
 func newAPI(t *testing.T, cacheTTL time.Duration) *api {
@@ -98,16 +99,31 @@ func newAPIWith(t *testing.T, cfg config.API) *api {
 	pool := testDB(t)
 	keys := repositories.NewKeys(pool)
 	auth := services.NewAuth(keys, cfg.AuthCacheTTL)
+	events := services.NewEvents(repositories.NewEvents(pool))
 	handler := New(
 		controllers.NewJobs(services.NewQueue(repositories.NewJobs(pool), jobs.Defaults()),
 			services.NewLimits(repositories.NewRateBuckets(pool), repositories.NewJobs(pool), cfg.QueueCeiling)),
 		controllers.NewSchedules(services.NewSchedules(repositories.NewSchedules(pool), jobs.Defaults(), cfg.MaxSchedulesPerTeam)),
 		controllers.NewTeams(services.NewTeams(repositories.NewTeams(pool), keys, auth)),
+		controllers.NewEvents(events),
 		auth, adminToken, pool.Ping,
 	)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return &api{t: t, srv: srv, auth: auth}
+
+	// Cleanups run last first: the streams end before the server waits for them.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		events.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		events.Close()
+	})
+	return &api{t: t, srv: srv, auth: auth, events: events}
 }
 
 // call sends body as JSON with token as the bearer, and decodes the reply into out
@@ -345,7 +361,7 @@ func TestAdminRoutes(t *testing.T) {
 		t.Fatalf("teams = %+v", teams.Teams)
 	}
 
-	off := httptest.NewServer(New(controllers.NewJobs(nil, nil), controllers.NewSchedules(nil), controllers.NewTeams(nil), nil, "", nil))
+	off := httptest.NewServer(New(controllers.NewJobs(nil, nil), controllers.NewSchedules(nil), controllers.NewTeams(nil), controllers.NewEvents(nil), nil, "", nil))
 	defer off.Close()
 	resp, err := http.Get(off.URL + "/api/teams")
 	if err != nil {
