@@ -1,25 +1,44 @@
 import { createBrowserRouter } from 'react-router'
 import { Layout, type RouteHandle } from './components/Layout'
-import { DeadJobsPage } from './pages/dead/DeadJobsPage'
-import { JobDetailPage } from './pages/job/JobDetailPage'
-import { JobsPage } from './pages/jobs/JobsPage'
 import { NotFoundPage } from './pages/NotFoundPage'
-import { OverviewPage } from './pages/overview/OverviewPage'
-import { TeamsPage } from './pages/teams/TeamsPage'
-import { WorkersPage } from './pages/workers/WorkersPage'
 
 const handle = (title: string): RouteHandle => ({ title })
 
+// Pages load on first visit, so the charts only come down with the overview.
 export const router = createBrowserRouter([
   {
     element: <Layout />,
     children: [
-      { index: true, element: <OverviewPage />, handle: handle('Overview') },
-      { path: 'jobs', element: <JobsPage />, handle: handle('Jobs') },
-      { path: 'jobs/:id', element: <JobDetailPage />, handle: handle('Jobs / Job detail') },
-      { path: 'workers', element: <WorkersPage />, handle: handle('Workers') },
-      { path: 'teams', element: <TeamsPage />, handle: handle('Teams') },
-      { path: 'dead', element: <DeadJobsPage />, handle: handle('Dead jobs') },
+      {
+        index: true,
+        handle: handle('Overview'),
+        lazy: async () => ({ Component: (await import('./pages/overview/OverviewPage')).OverviewPage }),
+      },
+      {
+        path: 'jobs',
+        handle: handle('Jobs'),
+        lazy: async () => ({ Component: (await import('./pages/jobs/JobsPage')).JobsPage }),
+      },
+      {
+        path: 'jobs/:id',
+        handle: handle('Jobs / Job detail'),
+        lazy: async () => ({ Component: (await import('./pages/job/JobDetailPage')).JobDetailPage }),
+      },
+      {
+        path: 'workers',
+        handle: handle('Workers'),
+        lazy: async () => ({ Component: (await import('./pages/workers/WorkersPage')).WorkersPage }),
+      },
+      {
+        path: 'teams',
+        handle: handle('Teams'),
+        lazy: async () => ({ Component: (await import('./pages/teams/TeamsPage')).TeamsPage }),
+      },
+      {
+        path: 'dead',
+        handle: handle('Dead jobs'),
+        lazy: async () => ({ Component: (await import('./pages/dead/DeadJobsPage')).DeadJobsPage }),
+      },
       { path: '*', element: <NotFoundPage /> },
     ],
   },
