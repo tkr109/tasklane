@@ -61,6 +61,8 @@ services:
       WORKER_VOLUMES: tasklane_jobdata:/data
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      # Only so compose creates the volume the workers share, and down -v removes it.
+      - jobdata:/data:ro
     # On the way out it waits for the workers it is still draining.
     stop_grace_period: 50s
     depends_on:
