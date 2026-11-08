@@ -34,7 +34,12 @@ func fastConfig() config.Worker {
 
 func startWorker(t *testing.T, pool *pgxpool.Pool, types jobs.Registry) {
 	t.Helper()
-	w := NewWorker(repositories.NewJobs(pool), repositories.NewWorkers(pool), types, fastConfig())
+	startWorkerWith(t, pool, types, fastConfig())
+}
+
+func startWorkerWith(t *testing.T, pool *pgxpool.Pool, types jobs.Registry, cfg config.Worker) {
+	t.Helper()
+	w := NewWorker(repositories.NewJobs(pool), repositories.NewWorkers(pool), repositories.NewRateBuckets(pool), types, cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- w.Run(ctx) }()
@@ -158,6 +163,57 @@ func TestExpiredLeaseIsRequeued(t *testing.T) {
 	waitUntil(t, 5*time.Second, "the requeued job to succeed", func() bool {
 		return jobStatus(t, pool, submitted.ID).Status == models.StatusSucceeded
 	})
+}
+
+func TestReapersRunOneAtATime(t *testing.T) {
+	pool := testDB(t)
+	ctx := context.Background()
+	for _, name := range []string{"a", "b", "c", "d", "e"} {
+		fill(t, pool, createTeam(t, pool, name, "enterprise"), 40)
+	}
+	// Going through running fires the trigger, so the teams' counts stay right.
+	if _, err := pool.Exec(ctx, `
+		update jobs set status = 'running', attempts = 1, locked_by = 'gone',
+			lease_until = now() - interval '1 second'`); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := repositories.NewJobs(pool)
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		reaped  int64
+		reapers int
+	)
+	for range 8 {
+		wg.Go(func() {
+			n, err := repo.ReapExpired(ctx)
+			if err != nil {
+				t.Errorf("reap: %v", err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			reaped += n
+			if n > 0 {
+				reapers++
+			}
+		})
+	}
+	wg.Wait()
+
+	if reaped != 200 || reapers != 1 {
+		t.Fatalf("%d reapers took back %d jobs, want one reaper taking all 200", reapers, reaped)
+	}
+	if got := countEvents(t, pool, "lease_expired"); got != 200 {
+		t.Errorf("%d lease_expired events, want 200", got)
+	}
+	var running int
+	if err := pool.QueryRow(ctx, `select coalesce(sum(running), 0) from team_usage`).Scan(&running); err != nil {
+		t.Fatal(err)
+	}
+	if running != 0 {
+		t.Errorf("teams still count %d running jobs", running)
+	}
 }
 
 func TestJobGoesDeadAfterMaxAttempts(t *testing.T) {

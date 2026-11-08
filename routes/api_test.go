@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"github.com/tkr109/tasklane/config"
 	"github.com/tkr109/tasklane/controllers"
 	"github.com/tkr109/tasklane/jobs"
 	"github.com/tkr109/tasklane/repositories"
@@ -72,38 +74,73 @@ func testDB(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("start postgres: %v", pgErr)
 	}
 	if _, err := pgPool.Exec(context.Background(), `
-		truncate jobs, job_events, api_keys restart identity;
-		delete from teams where name <> 'default'`); err != nil {
+		truncate jobs, job_events, api_keys, rate_buckets, workers restart identity;
+		delete from teams where name <> 'default';
+		update team_usage set running = 0, served = 0, served_at = now()`); err != nil {
 		t.Fatalf("reset tables: %v", err)
 	}
 	return pgPool
 }
 
-// api is the whole HTTP stack on a test server, plus the Auth behind it so tests
-// can look at what it has cached.
+// api is the whole HTTP stack on a test server, plus the services behind it that
+// tests look into.
 type api struct {
-	t    *testing.T
-	srv  *httptest.Server
-	auth *services.Auth
+	t       *testing.T
+	srv     *httptest.Server
+	auth    *services.Auth
+	events  *services.Events
+	monitor *services.Monitor
 }
 
 func newAPI(t *testing.T, cacheTTL time.Duration) *api {
+	return newAPIWith(t, config.API{AuthCacheTTL: cacheTTL, MaxSchedulesPerTeam: 50})
+}
+
+// newAPIWith is newAPI with the API settings that matter to a test.
+func newAPIWith(t *testing.T, cfg config.API) *api {
 	pool := testDB(t)
 	keys := repositories.NewKeys(pool)
-	auth := services.NewAuth(keys, cacheTTL)
+	auth := services.NewAuth(keys, cfg.AuthCacheTTL)
+	jobsRepo := repositories.NewJobs(pool)
+	events := services.NewEvents(repositories.NewEvents(pool))
+	monitor := services.NewMonitor(jobsRepo, repositories.NewWorkers(pool), repositories.NewTeams(pool), events,
+		jobs.Defaults(), map[string]float64{"flaky": 5}, cfg.QueueCeiling)
 	handler := New(
-		controllers.NewJobs(services.NewQueue(repositories.NewJobs(pool), jobs.Defaults())),
-		controllers.NewTeams(services.NewTeams(repositories.NewTeams(pool), keys)),
+		controllers.NewJobs(services.NewQueue(jobsRepo, jobs.Defaults()),
+			services.NewLimits(repositories.NewRateBuckets(pool), jobsRepo, events, cfg.QueueCeiling)),
+		controllers.NewSchedules(services.NewSchedules(repositories.NewSchedules(pool), jobs.Defaults(), cfg.MaxSchedulesPerTeam)),
+		controllers.NewTeams(services.NewTeams(repositories.NewTeams(pool), keys, auth)),
+		controllers.NewDashboard(monitor, services.NewDeadJobs(jobsRepo)),
+		controllers.NewEvents(events),
 		auth, adminToken, pool.Ping,
 	)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return &api{t: t, srv: srv, auth: auth}
+
+	// Cleanups run last first: the streams end before the server waits for them.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		events.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		events.Close()
+	})
+	return &api{t: t, srv: srv, auth: auth, events: events, monitor: monitor}
 }
 
 // call sends body as JSON with token as the bearer, and decodes the reply into out
 // if out is not nil.
 func (a *api) call(method, path, token string, body, out any) int {
+	a.t.Helper()
+	return a.do(method, path, token, body, out).StatusCode
+}
+
+// do is call returning the whole response. Its body has already been read.
+func (a *api) do(method, path, token string, body, out any) *http.Response {
 	a.t.Helper()
 	var buf bytes.Buffer
 	if body != nil {
@@ -128,7 +165,7 @@ func (a *api) call(method, path, token string, body, out any) int {
 			a.t.Fatalf("%s %s: decode: %v", method, path, err)
 		}
 	}
-	return resp.StatusCode
+	return resp
 }
 
 type team struct {
@@ -197,8 +234,11 @@ func TestKeysScopeJobsToTheirTeam(t *testing.T) {
 
 func TestBadAndRevokedKeysGet401(t *testing.T) {
 	const ttl = 300 * time.Millisecond
-	a := newAPI(t, ttl)
+	a := newAPI(t, time.Minute)
 	acme, key := a.createTeam("acme", "free")
+	// otherAPI stands in for a second API process with its own cache.
+	otherAPI := services.NewAuth(repositories.NewKeys(pgPool), ttl)
+	ctx := context.Background()
 
 	for name, token := range map[string]string{
 		"no key":          "",
@@ -217,12 +257,19 @@ func TestBadAndRevokedKeysGet401(t *testing.T) {
 	if code := a.call("GET", "/api/jobs", key.Key, nil, nil); code != http.StatusOK {
 		t.Fatalf("live key: status %d", code)
 	}
+	if _, err := otherAPI.Team(ctx, key.Key); err != nil {
+		t.Fatalf("live key on the other API: %v", err)
+	}
 	revoke := teamPath(acme.ID) + "/keys/" + strconv.FormatInt(key.ID, 10) + "/revoke"
 	if code := a.call("POST", revoke, adminToken, nil, nil); code != http.StatusOK {
 		t.Fatalf("revoke: status %d", code)
 	}
-	waitUntil(t, ttl+time.Second, "the revoked key to be refused", func() bool {
-		return a.call("GET", "/api/jobs", key.Key, nil, nil) == http.StatusUnauthorized
+	if code := a.call("GET", "/api/jobs", key.Key, nil, nil); code != http.StatusUnauthorized {
+		t.Fatalf("revoked key on the API that revoked it: status %d, want 401 at once", code)
+	}
+	waitUntil(t, ttl+time.Second, "the other API to refuse the revoked key", func() bool {
+		_, err := otherAPI.Team(ctx, key.Key)
+		return errors.Is(err, services.ErrUnauthorized)
 	})
 }
 
@@ -320,7 +367,7 @@ func TestAdminRoutes(t *testing.T) {
 		t.Fatalf("teams = %+v", teams.Teams)
 	}
 
-	off := httptest.NewServer(New(controllers.NewJobs(nil), controllers.NewTeams(nil), nil, "", nil))
+	off := httptest.NewServer(New(controllers.NewJobs(nil, nil), controllers.NewSchedules(nil), controllers.NewTeams(nil), controllers.NewDashboard(nil, nil), controllers.NewEvents(nil), nil, "", nil))
 	defer off.Close()
 	resp, err := http.Get(off.URL + "/api/teams")
 	if err != nil {
@@ -334,7 +381,7 @@ func TestAdminRoutes(t *testing.T) {
 
 func TestDevKeyWorksForTheDefaultTeam(t *testing.T) {
 	a := newAPI(t, time.Minute)
-	teams := services.NewTeams(repositories.NewTeams(pgPool), repositories.NewKeys(pgPool))
+	teams := services.NewTeams(repositories.NewTeams(pgPool), repositories.NewKeys(pgPool), a.auth)
 	ctx := context.Background()
 
 	const devKey = "tk_live_localdev"
@@ -356,7 +403,271 @@ func TestDevKeyWorksForTheDefaultTeam(t *testing.T) {
 	if job.TeamID != defaultID {
 		t.Fatalf("job went to team %d, want the default team %d", job.TeamID, defaultID)
 	}
+
+	// Someone revokes the dev key from the dashboard; the next startup brings it back.
+	var keys struct {
+		Keys []newKey `json:"keys"`
+	}
+	if code := a.call("GET", teamPath(defaultID)+"/keys", adminToken, nil, &keys); code != http.StatusOK || len(keys.Keys) != 1 {
+		t.Fatalf("list the default team's keys: status %d, %d keys", code, len(keys.Keys))
+	}
+	revoke := teamPath(defaultID) + "/keys/" + strconv.FormatInt(keys.Keys[0].ID, 10) + "/revoke"
+	if code := a.call("POST", revoke, adminToken, nil, nil); code != http.StatusOK {
+		t.Fatalf("revoke the dev key: status %d", code)
+	}
+	if code := a.call("GET", "/api/jobs", devKey, nil, nil); code != http.StatusUnauthorized {
+		t.Fatalf("revoked dev key: status %d, want 401", code)
+	}
+	if err := teams.EnsureDevKey(ctx, devKey); err != nil {
+		t.Fatalf("ensure dev key again: %v", err)
+	}
+	if code := a.call("GET", "/api/jobs", devKey, nil, nil); code != http.StatusOK {
+		t.Fatalf("dev key after a restart: status %d, want 200", code)
+	}
+
 	if err := teams.EnsureDevKey(ctx, "localdev"); err == nil {
 		t.Error("a dev key without the tk_live_ prefix was accepted")
+	}
+}
+
+func batchOf(n int) map[string]any {
+	jobs := make([]map[string]string, n)
+	for i := range jobs {
+		jobs[i] = map[string]string{"type": "sleep"}
+	}
+	return map[string]any{"jobs": jobs}
+}
+
+func headerInt(t *testing.T, resp *http.Response, name string) int {
+	t.Helper()
+	n, err := strconv.Atoi(resp.Header.Get(name))
+	if err != nil {
+		t.Fatalf("header %s = %q", name, resp.Header.Get(name))
+	}
+	return n
+}
+
+func TestSubmitsOverTheRateLimitGet429(t *testing.T) {
+	a := newAPI(t, time.Minute)
+	acme, key := a.createTeam("acme", "free") // 100 jobs a minute, a burst of 200
+	one := map[string]string{"type": "sleep"}
+
+	resp := a.do("POST", "/api/jobs/batch", key.Key, batchOf(150), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("batch of 150: status %d", resp.StatusCode)
+	}
+	if limit, left := headerInt(t, resp, "X-RateLimit-Limit"), headerInt(t, resp, "X-RateLimit-Remaining"); limit != 200 || left != 50 {
+		t.Fatalf("after a batch of 150: limit %d, remaining %d, want 200 and 50", limit, left)
+	}
+
+	resp = a.do("POST", "/api/jobs/batch", key.Key, batchOf(60), nil)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("batch of 60 with 50 left: status %d, want 429", resp.StatusCode)
+	}
+	// Ten more tokens at 100 a minute is six seconds.
+	if wait := headerInt(t, resp, "Retry-After"); wait < 5 || wait > 6 {
+		t.Errorf("Retry-After = %d, want about 6", wait)
+	}
+	if code := a.call("POST", "/api/jobs/batch", key.Key, batchOf(201), nil); code != http.StatusBadRequest {
+		t.Errorf("batch bigger than the burst: status %d, want 400", code)
+	}
+
+	resp = a.do("POST", "/api/jobs/batch", key.Key, batchOf(50), nil)
+	if resp.StatusCode != http.StatusCreated || headerInt(t, resp, "X-RateLimit-Remaining") != 0 {
+		t.Fatalf("batch of the last 50: status %d, remaining %s", resp.StatusCode, resp.Header.Get("X-RateLimit-Remaining"))
+	}
+	resp = a.do("POST", "/api/jobs", key.Key, one, nil)
+	if resp.StatusCode != http.StatusTooManyRequests || headerInt(t, resp, "Retry-After") != 1 {
+		t.Fatalf("empty bucket: status %d, Retry-After %q, want 429 and 1", resp.StatusCode, resp.Header.Get("Retry-After"))
+	}
+
+	waitUntil(t, 2*time.Second, "the bucket to refill a token", func() bool {
+		return a.call("POST", "/api/jobs", key.Key, one, nil) == http.StatusCreated
+	})
+
+	var teams struct {
+		Teams []struct {
+			ID    int64 `json:"id"`
+			Usage struct {
+				JobsLastMinute int `json:"jobs_last_minute"`
+			} `json:"usage"`
+		} `json:"teams"`
+	}
+	if code := a.call("GET", "/api/teams", adminToken, nil, &teams); code != http.StatusOK {
+		t.Fatalf("list teams: status %d", code)
+	}
+	for _, tm := range teams.Teams {
+		if tm.ID == acme.ID && tm.Usage.JobsLastMinute != 201 {
+			t.Errorf("jobs_last_minute = %d, want 201", tm.Usage.JobsLastMinute)
+		}
+	}
+}
+
+func TestBadSubmitsDontSpendTokens(t *testing.T) {
+	a := newAPI(t, time.Minute)
+	_, big := a.createTeam("acme", "enterprise") // a burst of 20,000
+	_, small := a.createTeam("globex", "free")   // a burst of 200
+
+	oneBad := batchOf(100)
+	oneBad["jobs"].([]map[string]string)[42]["type"] = "nope"
+	for name, req := range map[string]struct {
+		path string
+		body any
+	}{
+		"an unknown type":        {"/api/jobs", map[string]any{"type": "nope"}},
+		"a priority of 12":       {"/api/jobs", map[string]any{"type": "sleep", "priority": 12}},
+		"a bad delay":            {"/api/jobs", map[string]any{"type": "sleep", "delay": "soon"}},
+		"a batch over 500":       {"/api/jobs/batch", batchOf(501)},
+		"a batch with a bad job": {"/api/jobs/batch", oneBad},
+	} {
+		if code := a.call("POST", req.path, big.Key, req.body, nil); code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", name, code)
+		}
+	}
+	if code := a.call("POST", "/api/jobs/batch", small.Key, batchOf(201), nil); code != http.StatusBadRequest {
+		t.Errorf("a batch over the burst: status %d, want 400", code)
+	}
+
+	for key, burst := range map[string]int{big.Key: 20_000, small.Key: 200} {
+		resp := a.do("POST", "/api/jobs", key, map[string]string{"type": "sleep"}, nil)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("a good submit: status %d", resp.StatusCode)
+		}
+		if left := headerInt(t, resp, "X-RateLimit-Remaining"); left != burst-1 {
+			t.Errorf("remaining after one good submit = %d, want %d", left, burst-1)
+		}
+	}
+}
+
+func TestOverloadedQueueGets503(t *testing.T) {
+	a := newAPIWith(t, config.API{AuthCacheTTL: time.Minute, QueueCeiling: 5})
+	_, key := a.createTeam("acme", "pro")
+	one := map[string]string{"type": "sleep"}
+
+	if code := a.call("POST", "/api/jobs/batch", key.Key, batchOf(5), nil); code != http.StatusCreated {
+		t.Fatalf("batch of 5: status %d", code)
+	}
+	// The API counts the queue at most once a second, so the 503 can lag a little.
+	var resp *http.Response
+	waitUntil(t, 3*time.Second, "submits to be turned away", func() bool {
+		resp = a.do("POST", "/api/jobs", key.Key, one, nil)
+		return resp.StatusCode == http.StatusServiceUnavailable
+	})
+	if wait := headerInt(t, resp, "Retry-After"); wait < 1 {
+		t.Errorf("Retry-After = %d", wait)
+	}
+
+	if _, err := pgPool.Exec(context.Background(), `update jobs set status = 'cancelled'`); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 3*time.Second, "submits to be accepted once the queue drained", func() bool {
+		return a.call("POST", "/api/jobs", key.Key, one, nil) == http.StatusCreated
+	})
+}
+
+func TestSchedulesBelongToTheirTeam(t *testing.T) {
+	a := newAPI(t, time.Minute)
+	_, acme := a.createTeam("acme", "free")
+	_, globex := a.createTeam("globex", "free")
+
+	type schedule struct {
+		ID        int64     `json:"id"`
+		Cron      string    `json:"cron"`
+		Timezone  string    `json:"timezone"`
+		Type      string    `json:"type"`
+		Priority  int       `json:"priority"`
+		Enabled   bool      `json:"enabled"`
+		NextRunAt time.Time `json:"next_run_at"`
+	}
+	body := map[string]any{"cron": "*/5 * * * *", "timezone": "Europe/Berlin", "type": "sleep", "payload": map[string]int{"seconds": 1}}
+	var created schedule
+	if code := a.call("POST", "/api/schedules", acme.Key, body, &created); code != http.StatusCreated {
+		t.Fatalf("create: status %d", code)
+	}
+	if created.Timezone != "Europe/Berlin" || !created.Enabled || created.Priority != 5 || !created.NextRunAt.After(time.Now()) {
+		t.Fatalf("created %+v", created)
+	}
+	path := "/api/schedules/" + strconv.FormatInt(created.ID, 10)
+
+	for name, bad := range map[string]map[string]any{
+		"a bad expression":        {"cron": "every day", "type": "sleep"},
+		"more than once a minute": {"cron": "@every 10s", "type": "sleep"},
+		"an unknown zone":         {"cron": "0 9 * * *", "timezone": "Moon/Base", "type": "sleep"},
+	} {
+		if code := a.call("POST", "/api/schedules", acme.Key, bad, nil); code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", name, code)
+		}
+	}
+
+	var list struct {
+		Schedules json.RawMessage `json:"schedules"`
+	}
+	if code := a.call("GET", "/api/schedules", globex.Key, nil, &list); code != http.StatusOK || string(list.Schedules) != "[]" {
+		t.Fatalf("another team's list: status %d, schedules %s", code, list.Schedules)
+	}
+	for _, method := range []string{"GET", "PUT", "DELETE"} {
+		if code := a.call(method, path, globex.Key, body, nil); code != http.StatusNotFound {
+			t.Errorf("%s on another team's schedule: status %d, want 404", method, code)
+		}
+	}
+
+	body["enabled"] = false
+	body["cron"] = "@daily"
+	var updated schedule
+	if code := a.call("PUT", path, acme.Key, body, &updated); code != http.StatusOK {
+		t.Fatalf("update: status %d", code)
+	}
+	if updated.Enabled || updated.Cron != "@daily" {
+		t.Fatalf("updated %+v", updated)
+	}
+	if code := a.call("DELETE", path, acme.Key, nil, nil); code != http.StatusNoContent {
+		t.Fatalf("delete: status %d", code)
+	}
+	if code := a.call("GET", path, acme.Key, nil, nil); code != http.StatusNotFound {
+		t.Fatalf("get after delete: status %d, want 404", code)
+	}
+}
+
+func TestSchedulesPerTeamAreCapped(t *testing.T) {
+	a := newAPIWith(t, config.API{AuthCacheTTL: time.Minute, MaxSchedulesPerTeam: 3})
+	_, acme := a.createTeam("acme", "free")
+	_, globex := a.createTeam("globex", "free")
+	body := map[string]any{"cron": "@hourly", "type": "sleep"}
+
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		codes = map[int]int{}
+	)
+	for range 10 {
+		wg.Go(func() {
+			code := a.call("POST", "/api/schedules", acme.Key, body, nil)
+			mu.Lock()
+			codes[code]++
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	if codes[http.StatusCreated] != 3 || codes[http.StatusConflict] != 7 {
+		t.Fatalf("ten creates against a cap of 3 got %v, want 3 created and 7 conflicts", codes)
+	}
+	if code := a.call("POST", "/api/schedules", globex.Key, body, nil); code != http.StatusCreated {
+		t.Fatalf("another team's first schedule: status %d", code)
+	}
+
+	var list struct {
+		Schedules []struct {
+			ID int64 `json:"id"`
+		} `json:"schedules"`
+	}
+	if code := a.call("GET", "/api/schedules", acme.Key, nil, &list); code != http.StatusOK || len(list.Schedules) != 3 {
+		t.Fatalf("list: status %d, %d schedules", code, len(list.Schedules))
+	}
+	path := "/api/schedules/" + strconv.FormatInt(list.Schedules[0].ID, 10)
+	if code := a.call("DELETE", path, acme.Key, nil, nil); code != http.StatusNoContent {
+		t.Fatalf("delete: status %d", code)
+	}
+	if code := a.call("POST", "/api/schedules", acme.Key, body, nil); code != http.StatusCreated {
+		t.Fatalf("create after a delete: status %d, want 201", code)
 	}
 }

@@ -40,12 +40,12 @@ func (r *Keys) Create(ctx context.Context, teamID int64, prefix string, hash []b
 	return key, err
 }
 
-// Ensure adds the key unless it is already stored. A key that was revoked stays
-// revoked.
+// Ensure makes the key a live key of the team: it adds it, or takes back a revoke
+// if it is already stored.
 func (r *Keys) Ensure(ctx context.Context, teamID int64, prefix string, hash []byte) error {
 	_, err := r.db.Exec(ctx, `
 		insert into api_keys (team_id, prefix, hash) values ($1, $2, $3)
-		on conflict (hash) do nothing`,
+		on conflict (hash) do update set team_id = excluded.team_id, revoked_at = null`,
 		teamID, prefix, hash)
 	return err
 }

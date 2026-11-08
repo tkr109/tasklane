@@ -227,7 +227,8 @@ func TestOldLowPriorityJobBeatsANewUrgentOne(t *testing.T) {
 
 	var old, urgent int64
 	if err := pool.QueryRow(ctx, `
-		insert into jobs (team_id, type, priority, run_at) values ($1, 'noop', 0, now() - interval '10 minutes')
+		insert into jobs (team_id, type, priority, run_at, ready_at)
+		values ($1, 'noop', 0, now() - interval '10 minutes', now() - interval '10 minutes')
 		returning id`, team).Scan(&old); err != nil {
 		t.Fatal(err)
 	}
@@ -255,5 +256,44 @@ func TestOldLowPriorityJobBeatsANewUrgentOne(t *testing.T) {
 	job, err := repo.Get(ctx, team, old)
 	if err != nil || job.Status != models.StatusRunning {
 		t.Fatalf("aged job: status=%s err=%v", job.Status, err)
+	}
+}
+
+func TestAHeldJobKeepsTheAgeItBuiltUp(t *testing.T) {
+	pool := testDB(t)
+	ctx := context.Background()
+	team := defaultTeam(t, pool)
+	repo := repositories.NewJobs(pool)
+	types := []string{"email"}
+
+	var old int64
+	if err := pool.QueryRow(ctx, `
+		insert into jobs (team_id, type, priority, run_at, ready_at)
+		values ($1, 'email', 0, now() - interval '10 minutes', now() - interval '10 minutes')
+		returning id`, team).Scan(&old); err != nil {
+		t.Fatal(err)
+	}
+	job, err := grab(ctx, repo, "w1", types, fastConfig())
+	if err != nil || job.ID != old {
+		t.Fatalf("first grab: job %d, err %v", job.ID, err)
+	}
+	// The type's rate limit sends it back for a moment, and an urgent job arrives.
+	if err := repo.Hold(ctx, old, "w1", 50*time.Millisecond, "email is at its limit"); err != nil {
+		t.Fatal(err)
+	}
+	var urgent int64
+	if err := pool.QueryRow(ctx, `
+		insert into jobs (team_id, type, priority) values ($1, 'email', 9) returning id`, team).Scan(&urgent); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// Ten minutes of waiting is worth twenty levels, so it still beats a fresh 9.
+	job, err = grab(ctx, repo, "w1", types, fastConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.ID != old {
+		t.Fatalf("grabbed job %d after the hold, want the aged job %d before the urgent %d", job.ID, old, urgent)
 	}
 }

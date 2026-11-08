@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -85,7 +86,9 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 	defer pool.Close()
 
 	keys := repositories.NewKeys(pool)
-	teams := services.NewTeams(repositories.NewTeams(pool), keys)
+	auth := services.NewAuth(keys, cfg.API.AuthCacheTTL)
+	teamsRepo := repositories.NewTeams(pool)
+	teams := services.NewTeams(teamsRepo, keys, auth)
 	if cfg.API.DevAPIKey != "" {
 		if err := teams.EnsureDevKey(ctx, cfg.API.DevAPIKey); err != nil {
 			return fmt.Errorf("dev api key: %w", err)
@@ -96,11 +99,34 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 		slog.Warn("ADMIN_TOKEN is not set, admin endpoints are off")
 	}
 
-	queue := services.NewQueue(repositories.NewJobs(pool), jobs.Defaults())
+	jobsRepo := repositories.NewJobs(pool)
+	schedules := repositories.NewSchedules(pool)
+	events := services.NewEvents(repositories.NewEvents(pool))
+	monitor := services.NewMonitor(jobsRepo, repositories.NewWorkers(pool), teamsRepo, events,
+		jobs.Defaults(), cfg.Worker.TypeLimits, cfg.API.QueueCeiling)
+	// Every api runs a scheduler; the one holding the advisory lock fires schedules,
+	// and publishes the stats.
+	scheduler := services.NewScheduler(schedules, cfg.API.SchedulerTick)
+
+	bgCtx, stopBackground := context.WithCancel(ctx)
+	var background sync.WaitGroup
+	background.Go(func() { scheduler.Run(bgCtx) })
+	background.Go(func() { events.Run(bgCtx) })
+	background.Go(func() { monitor.Run(bgCtx, scheduler.Leading) })
+	defer func() {
+		stopBackground()
+		background.Wait()
+	}()
+
+	queue := services.NewQueue(jobsRepo, jobs.Defaults())
+	limits := services.NewLimits(repositories.NewRateBuckets(pool), jobsRepo, events, cfg.API.QueueCeiling)
 	handler := routes.New(
-		controllers.NewJobs(queue),
+		controllers.NewJobs(queue, limits),
+		controllers.NewSchedules(services.NewSchedules(schedules, jobs.Defaults(), cfg.API.MaxSchedulesPerTeam)),
 		controllers.NewTeams(teams),
-		services.NewAuth(keys, cfg.API.AuthCacheTTL),
+		controllers.NewDashboard(monitor, services.NewDeadJobs(jobsRepo)),
+		controllers.NewEvents(events),
+		auth,
 		cfg.API.AdminToken,
 		pool.Ping,
 	)
@@ -109,6 +135,8 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	// Event streams never go idle, so Shutdown would wait them out.
+	srv.RegisterOnShutdown(events.Close)
 
 	errc := make(chan error, 1)
 	go func() {
@@ -138,6 +166,7 @@ func runWorker(ctx context.Context, cfg config.Config) error {
 	}
 	defer pool.Close()
 
-	worker := services.NewWorker(repositories.NewJobs(pool), repositories.NewWorkers(pool), jobs.Defaults(), cfg.Worker)
+	worker := services.NewWorker(repositories.NewJobs(pool), repositories.NewWorkers(pool),
+		repositories.NewRateBuckets(pool), jobs.Defaults(), cfg.Worker)
 	return worker.Run(ctx)
 }

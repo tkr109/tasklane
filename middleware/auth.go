@@ -32,12 +32,27 @@ func APIKey(auth *services.Auth, next http.Handler) http.Handler {
 // Admin guards the dashboard's admin endpoints with one shared token. With no
 // token configured they are switched off.
 func Admin(token string, next http.Handler) http.Handler {
+	return admin(token, bearer, next)
+}
+
+// AdminStream is Admin for the event stream. EventSource can't send headers, so
+// the token may come as ?token= instead; no other route takes it from the URL.
+func AdminStream(token string, next http.Handler) http.Handler {
+	return admin(token, func(r *http.Request) string {
+		if t := r.URL.Query().Get("token"); t != "" {
+			return t
+		}
+		return bearer(r)
+	}, next)
+}
+
+func admin(token string, credential func(*http.Request) string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if token == "" {
 			writeError(w, http.StatusForbidden, "admin endpoints are off, set ADMIN_TOKEN to use them")
 			return
 		}
-		if subtle.ConstantTimeCompare([]byte(bearer(r)), []byte(token)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(credential(r)), []byte(token)) != 1 {
 			unauthorized(w, "missing or invalid admin token")
 			return
 		}

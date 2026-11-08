@@ -46,7 +46,7 @@ tasklane/
 ├── config/            # env vars and defaults
 ├── routes/            # URL -> controller wiring
 ├── controllers/       # HTTP handlers, request/response shapes
-├── middleware/        # API key auth, rate limit, request logging
+├── middleware/        # API key auth, request logging
 ├── services/          # business logic: queue, fairness, scheduler, scaler, events
 ├── repositories/      # SQL queries, one file per table group
 ├── models/            # plain data types (Job, Team, Plan, ApiKey...)
@@ -69,14 +69,19 @@ There is no `utils/` folder; a helper lives next to the code that uses it.
 - `api_keys`: team_id, prefix (for display), sha256 hash (unique, what a key is looked up
   by), revoked_at
 - `jobs`: team_id, type, payload (jsonb), priority, status, attempts, max_attempts,
-  run_at, lease_until, locked_by, idempotency_key, progress, last_error, timestamps
+  run_at, ready_at (when its current wait began, for aging), lease_until, locked_by,
+  idempotency_key, progress, last_error, throttled_at (when its type's rate limit last
+  pushed it back), error_key (the shape of the last error, set when the job dies),
+  timestamps
 - `job_events`: job_id, kind, message, at (the timeline)
-- `schedules`: team_id, cron expression, job template, next_run_at
-- `workers`: id, host, started_at, last_seen_at (heartbeat). There is no current-job column:
-  a worker's running jobs are the ones whose `jobs.locked_by` is its id.
+- `schedules`: team_id, cron expression, timezone, job template (type, payload, priority,
+  max_attempts), enabled, next_run_at, last_run_at
+- `workers`: id, host, state (running or draining), started_at, last_seen_at (heartbeat),
+  jobs_done (sent with each heartbeat). There is no current-job column: a worker's running
+  jobs are the ones whose `jobs.locked_by` is its id.
 - `team_usage`: team_id, running (jobs running now), served (a decaying count of jobs
   started), served_at. Used for fair share.
-- `rate_buckets`: key (team or job type), tokens, updated_at
+- `rate_buckets`: key (`team:<id>` or `type:<name>`), tokens, updated_at
 
 Redis can come back later behind the same service interfaces if load tests show Postgres is
 the bottleneck for rate limits or events.
@@ -112,7 +117,8 @@ reaper also deletes worker rows that missed 10 heartbeats in a row.
 `(team_id, idempotency_key)` means a repeat returns the original job instead of a new one.
 
 **Retries.** An attempt is counted when a worker grabs the job, so a crash mid-job still
-uses one up. On failure: `run_at = now() + backoff(attempt)` with exponential growth and
+uses one up. The one exception is a job its type's rate limit sends straight back (see Rate
+limits): that grab gives the attempt back. On failure: `run_at = now() + backoff(attempt)` with exponential growth and
 jitter, and the job sits in `failed` until then. After `max_attempts` the job goes to
 `dead`. The dashboard can retry dead jobs.
 
@@ -124,14 +130,16 @@ a grace period), then exits. Anything unfinished falls back via the lease.
 
 **Priorities.** 0 (low) to 9 (urgent), 5 by default. Effective priority grows with wait
 time (aging) so low jobs still run: `priority + waited / PRIORITY_AGING_STEP`. With the
-default step of 30s, a priority 0 job that has waited 4.5 minutes ties a fresh 9.
+default step of 30s, a priority 0 job that has waited 4.5 minutes ties a fresh 9. The wait
+counts from `ready_at`, which moves with `run_at` (a delay, a retry's backoff) except when
+a rate limit holds the job back, so a hold doesn't cost the job the priority it has built up.
 
 **Fairness.** Teams take turns, weighted by their plan's share weight. A team at its plan's
 worker cap is skipped. See Fair share below.
 
 **Scheduling.** Delayed jobs are just `run_at` in the future. Repeating jobs come from
 `schedules`. Only one scheduler fires them: whoever holds a Postgres advisory lock. If that
-process dies, the lock frees and another takes over.
+process dies, the lock frees and another takes over. See Scheduling below.
 
 ## Fair share
 
@@ -139,7 +147,8 @@ A grab is two queries with a decision in Go between them.
 
 1. **Backlog**, no locks. For every team under its worker cap: its weight, its served count,
    and the oldest runnable job at each priority level. That is one probe per level on the
-   `(team_id, priority, run_at, id)` index, so it stays cheap however long the queue is.
+   `(team_id, priority, ready_at, id)` index, so it stays cheap however long the queue is.
+   Only jobs in a hold have `ready_at` before `run_at`, so a probe skips at most those.
 2. **Pick.** A team's share is its served count divided by its plan weight. The lowest share
    is furthest behind, so teams are tried in that order. Inside a team, the level whose
    oldest job has the highest aged priority wins.
@@ -166,29 +175,79 @@ fair share is more slots than its cap stops at the cap, and the spare slots go t
 
 Lock order: a grab locks a job row and then its team's row; a finish does the same through
 the trigger. Nothing waits on a job row while holding a team row, so grabs and finishes
-can't deadlock. Two reapers freeing jobs of several teams at the same moment can, and
-Postgres then cancels one, which retries on its next tick.
+can't deadlock. Two reapers freeing jobs of several teams at once could, so the reaper runs
+under an advisory transaction lock: one reaps, the others skip that tick.
 
 ## Auth
 
 Apps call the API with `Authorization: Bearer tk_live_...`. Only a sha256 hash of each key
 and a short display prefix are stored; the full key is shown once, when it is created. The
 middleware resolves the key to its team and plan and caches that for `AUTH_CACHE_TTL` (5s),
-so a revoked key or a plan switch shows within that time. Scheduling reads plans straight
-from Postgres, so a plan switch changes weights and caps on the next grab.
+so a plan switch shows within that time. A revoke shows at once on the API process that
+handled it, which drops that team's cached keys, and within the TTL on the others.
+Scheduling reads plans straight from Postgres, so a plan switch changes weights and caps on
+the next grab.
 
 The admin endpoints the dashboard uses take a single shared `ADMIN_TOKEN` the same way. It is
-a demo, so there are no users or logins. Local runs set `DEV_API_KEY`, which the api
-registers for the default team on startup.
+a demo, so there are no users or logins. Local runs set `DEV_API_KEY`, which the api makes a
+live key of the default team on startup, adding it again or taking back a revoke.
 
 ## Rate limits
 
-1. **Incoming.** Token bucket per team in a `rate_buckets` table, refilled and spent in one
-   atomic `UPDATE ... RETURNING`. Batch of N costs N. Over the limit returns `429` with
-   `Retry-After`. Responses carry `X-RateLimit-Remaining`.
-2. **Outgoing.** Per job type, shared across all workers (e.g. email 10/s). A job that hits
-   it is pushed back a little and does not use up a retry.
-3. **Overload.** If total queued jobs pass a ceiling, submits get `503` until it drains.
+All in Postgres, in the `rate_buckets` table. A bucket is refilled from its `updated_at` and
+spent from in one atomic upsert (`INSERT ... ON CONFLICT DO UPDATE ... WHERE` enough tokens,
+`RETURNING` what is left), so API processes can't overspend between them.
+
+1. **Incoming.** A bucket per team, refilled at the plan's jobs per minute up to its burst.
+   A submit costs 1 and a batch of N costs N; a batch bigger than the burst could never fit
+   and gets `400`. A request is checked in full first, so one that would fail anyway (an
+   unknown type, a batch over 500) spends nothing. Over the limit returns `429` with `Retry-After` (whole seconds until
+   enough tokens are back). Submit responses carry `X-RateLimit-Limit` (the bucket size,
+   i.e. the burst) and `X-RateLimit-Remaining` (whole tokens left). The check sits in the
+   jobs controller rather than a middleware because the cost depends on the batch size.
+   The teams admin list shows `usage.jobs_last_minute` next to the plan's jobs per minute.
+2. **Outgoing.** `TYPE_RATE_LIMITS` (default `email=10/s,webhook=200/s`) gives a type a
+   bucket shared by all workers, with a burst of a tenth of a second's worth (at least 1).
+   After a grab, a job of a limited type needs a token. Without one it goes straight back to
+   `queued` until the next token is due, with its attempt and its team's fair share turn
+   given back, its `ready_at` kept, a `throttled` event on its timeline, and `throttled_at`
+   set. That worker then
+   leaves the type alone until the token is due, so a saturated type doesn't spin.
+   `HeldByLimit` counts the waiting jobs of every type throttled in a recent window, which
+   is what the scaler should leave out.
+3. **Overload.** Once `QUEUE_CEILING` (default 100,000) runnable jobs are waiting, submits
+   get `503` with `Retry-After: 5` until it drains. The count is shared by every request and
+   refreshed at most once a second, so a flood doesn't turn into a flood of counts.
+
+Scheduled jobs skip the incoming limit and the overload check; only submits pay. What
+bounds them instead is `MAX_SCHEDULES_PER_TEAM` (50): at one firing a minute at most, a team
+can queue 50 jobs a minute through schedules.
+
+## Scheduling
+
+**Delayed jobs.** A submit (or each job in a batch) may give `run_at` (RFC 3339) or `delay`
+(a Go duration such as `90s` or `2h30m`), up to a year out. A time in the past means now,
+since a backdated job would jump the queue through aging.
+
+**Repeating jobs.** A schedule has a cron expression (five fields, or a descriptor such as
+`@hourly` or `@every 2h`), parsed with robfig/cron's parser, and an IANA time zone (UTC by
+default). The API refuses anything firing more than once a minute. Changing a schedule
+works out its next run again from now. A team can have `MAX_SCHEDULES_PER_TEAM` (50)
+schedules; one more gets `409`. A create locks the team's row while it counts, so
+concurrent creates can't pass the cap.
+
+**One leader.** Every api process runs a scheduler on a connection of its own. Each tick
+(`SCHEDULER_TICK`, 1s) it tries `pg_try_advisory_lock`; the one that gets it leads and fires
+through that same connection, so a process whose connection died can't fire. When the
+leader exits or its session drops, the lock goes with the session and another api takes
+over on its next tick.
+
+**Exactly once per tick.** Firing is one transaction: lock the due schedules
+(`FOR UPDATE SKIP LOCKED`), insert each one's job with the idempotency key
+`schedule:<id>:<tick>` (`ON CONFLICT DO NOTHING`), and move `next_run_at` on. Even two
+processes that both believe they lead can't fire a tick twice. The next run counts from now,
+not from the tick that fired, so after an outage a schedule runs one catch-up, not one per
+missed tick.
 
 ## Autoscaling
 
@@ -204,10 +263,57 @@ Every decision is logged and published so the dashboard can chart it.
 
 ## Live updates
 
-Workers and the API publish events (job status, progress, worker up/down, scaler decision)
-with Postgres `NOTIFY`. Every API instance `LISTEN`s and relays them to browsers over SSE, so
-it doesn't matter which instance a browser hits. Payloads stay small (ids + a few fields). Progress events are throttled to ~2/s per job. SSE event ids
-let a reconnecting browser catch up.
+Everything the dashboard shows live travels on one Postgres channel, `tasklane_events`, as
+`{"event": name, "data": {...}}`. Payloads hold ids and a few fields, with long text cut
+short, far under `NOTIFY`'s 8000-byte limit; Go refuses to send one over 4000.
+
+| Event        | Sent by                                               | Data                                                                                                 |
+|--------------|-------------------------------------------------------|------------------------------------------------------------------------------------------------------|
+| `job`        | a trigger on `jobs`, on any status or progress change | id, team_id, type, status, progress, attempts, run_at, locked_by, last_error (200 chars), updated_at |
+| `worker`     | the worker's heartbeat, drain and removal statements  | id, host, state (running, draining, stopped), started_at, last_seen_at, jobs_done                    |
+| `rejected`   | the api that answered a submit with `429`             | team_id, jobs                                                                                        |
+| `stats`      | the api leading the scheduler, every second           | the overview snapshot and one new sample                                                             |
+| `team_usage` | the same api, every second, 20 teams per event        | team_id, queued, running, jobs_last_minute, rejected_last_minute, fair_share                         |
+| `decision`   | the scaler (step 8)                                   |                                                                                                      |
+| `reset`      | an api, to its own streams                            | `{}`: refetch everything                                                                             |
+
+- **Jobs.** A trigger covers every path that changes a job (submits, grabs, finishes, holds,
+  the reaper, the scheduler), and a write that rolls back announces nothing, as notifications
+  go out on commit.
+- **Progress.** A handler may report as often as it likes. The worker writes at most one
+  report every 500ms, and when the interval ends it writes the latest one it held back, so the
+  last value always lands. Each write is one `job` event, so that's about 2/s per job.
+- **Relaying.** Every api `LISTEN`s on a connection of its own and fans out to the browsers
+  on `GET /api/events` (SSE), so it doesn't matter which api a browser hits. Each event has an
+  `id:`, and a `: ping` comment goes out every 15s so proxies keep the stream open. A stream
+  that falls 512 events behind is closed, and the browser reconnects.
+- **Catching up.** Each api numbers events `<process>-<n>` and keeps the last 2048. A browser
+  that reconnects to the same api with `Last-Event-ID` gets what it missed. An api can't replay
+  another's events, so a reconnect that lands elsewhere, or reaches back too far, gets a single
+  `reset` and should refetch. An api whose listening connection had to be replaced sends
+  `reset` too, as it may have missed events meanwhile.
+- **Stats.** Only the api leading the scheduler runs the overview query, once a second. Every
+  api relays the result and keeps the last 150 samples, so `GET /api/stats` reads memory; if no
+  stats have come for 3s, the request counts for itself. Throughput, per second and per type,
+  is counted from `job` events and refusals from `rejected` events, so neither needs a query.
+  The counts read partial indexes (queued and failed jobs, today's successes, dead jobs) or
+  small tables.
+- **Cost.** Every job change is a `NOTIFY`, and Postgres serialises the commits of
+  transactions that notify. That caps how fast jobs can change state; it's ample for a laptop,
+  and Redis pub/sub could take over behind the same service if load tests say otherwise.
+- **Auth.** The stream takes the admin token. `EventSource` can't send headers, so this one
+  route also takes it as `?token=`; the request log records the path without the query.
+
+## Dead jobs
+
+Dead jobs are grouped by type and the shape of their last error. When a job dies, a trigger
+stores `normalize_error(last_error)` in `error_key`: UUIDs become `<id>`, quoted values
+`<str>`, email addresses `<email>`, any word with a digit in it `<n>`, cut to 200 characters.
+So `connect to 10.0.0.5:443: timeout` and `connect to 10.0.0.9:443: timeout` are one group.
+An index on `(type, error_key, finished_at, team_id)` for dead jobs answers the groups page,
+the counts and a group's retry without reading the table. A group's id is its type and
+pattern in base64url, so retrying one needs no table of groups. A retry requeues the group's
+jobs in one statement, with fresh attempts; as an admin action it skips the queue ceiling.
 
 ## Dashboard pages
 
@@ -215,22 +321,24 @@ let a reconnecting browser catch up.
   throughput chart, "Flood 10k jobs" demo button
 - **Jobs**: table with filters, live progress bars, bulk retry/cancel
 - **Job detail**: payload, result, timeline, attempts
-- **Workers**: live list, current job, heartbeat age, scaler decisions log
+- **Workers**: live list, running jobs, heartbeat age, scaler decisions log
 - **Teams**: plan, usage vs limit, API keys, one-click plan switch
 - **Dead jobs**: grouped by error, retry group
 
 ## API (first cut)
 
 ```
-POST   /api/jobs                               submit (Idempotency-Key supported)
+POST   /api/jobs                               submit (Idempotency-Key, run_at or delay)
 POST   /api/jobs/batch                         submit many
 GET    /api/jobs                               list, cursor pagination, filters
 GET    /api/jobs/{id}                          detail + timeline
 POST   /api/jobs/{id}/cancel
 POST   /api/jobs/{id}/retry
-GET    /api/schedules                          list / create / delete
-GET    /api/workers
-GET    /api/stats
+GET    /api/schedules                          the team's schedules
+POST   /api/schedules                          create {cron, timezone, type, payload, ...}
+GET    /api/schedules/{id}
+PUT    /api/schedules/{id}                     replace, enabled: false pauses it
+DELETE /api/schedules/{id}
 GET    /api/plans                              admin
 GET    /api/teams                              admin: teams with plan and usage
 POST   /api/teams                              admin: create {name, plan}
@@ -238,15 +346,22 @@ PUT    /api/teams/{id}/plan                    admin: switch plan {plan}
 GET    /api/teams/{id}/keys                    admin
 POST   /api/teams/{id}/keys                    admin: returns the full key once
 POST   /api/teams/{id}/keys/{key}/revoke       admin
-GET    /api/events                             SSE stream
+GET    /api/stats                              admin: counts, rates and the last 150 samples
+GET    /api/workers                            admin: live workers, their jobs, scaler decisions
+GET    /api/dead-groups                        admin: dead jobs grouped by type and error
+GET    /api/dead-groups/{id}/jobs              admin: a group's latest jobs (?limit=, 5)
+POST   /api/dead-groups/{id}/retry             admin: requeue the whole group
+GET    /api/events                             admin: SSE stream, also takes ?token=
 GET    /healthz
 ```
 
 ## Testing
 
-- Unit tests for backoff, fairness picking, scaler decisions, rate limit math.
+- Unit tests for backoff, fairness picking, scaler decisions, rate limit math, the progress
+  throttle, event encoding and replay.
 - Integration tests against a real Postgres (testcontainers): double-grab, lease
-  expiry, idempotency, starvation, plan weights, worker caps, auth, leader failover.
+  expiry, idempotency, starvation, plan weights, worker caps, auth, leader failover,
+  events crossing api processes, replay after a reconnect, dead job groups.
 - CI runs `go vet`, tests, and the web build on every push.
 
 ## Build order

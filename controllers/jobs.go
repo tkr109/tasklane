@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/tkr109/tasklane/models"
 	"github.com/tkr109/tasklane/services"
@@ -15,11 +16,12 @@ const maxBodyBytes = 1 << 20
 // Jobs serves the API that apps call with their key. Every handler works on the
 // team the auth middleware resolved.
 type Jobs struct {
-	queue *services.Queue
+	queue  *services.Queue
+	limits *services.Limits
 }
 
-func NewJobs(queue *services.Queue) *Jobs {
-	return &Jobs{queue: queue}
+func NewJobs(queue *services.Queue, limits *services.Limits) *Jobs {
+	return &Jobs{queue: queue, limits: limits}
 }
 
 type jobRequest struct {
@@ -27,6 +29,8 @@ type jobRequest struct {
 	Payload     json.RawMessage `json:"payload"`
 	Priority    *int            `json:"priority"`
 	MaxAttempts *int            `json:"max_attempts"`
+	RunAt       *time.Time      `json:"run_at"`
+	Delay       string          `json:"delay"`
 }
 
 func (r jobRequest) spec() services.JobSpec {
@@ -35,6 +39,8 @@ func (r jobRequest) spec() services.JobSpec {
 		Payload:     r.Payload,
 		Priority:    r.Priority,
 		MaxAttempts: r.MaxAttempts,
+		RunAt:       r.RunAt,
+		Delay:       r.Delay,
 	}
 }
 
@@ -48,7 +54,15 @@ func (h *Jobs) Submit(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	job, created, err := h.queue.Submit(r.Context(), teamID(r), req.spec(), r.Header.Get("Idempotency-Key"))
+	nj, err := h.queue.Prepare(teamID(r), req.spec(), r.Header.Get("Idempotency-Key"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	if !h.admit(w, r, 1) {
+		return
+	}
+	job, created, err := h.queue.Enqueue(r.Context(), nj)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -71,7 +85,15 @@ func (h *Jobs) SubmitBatch(w http.ResponseWriter, r *http.Request) {
 	for i, j := range req.Jobs {
 		specs[i] = j.spec()
 	}
-	created, err := h.queue.SubmitBatch(r.Context(), teamID(r), specs)
+	batch, err := h.queue.PrepareBatch(teamID(r), specs)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	if !h.admit(w, r, len(batch)) {
+		return
+	}
+	created, err := h.queue.EnqueueBatch(r.Context(), batch)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -148,6 +170,21 @@ func (h *Jobs) Retry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
+}
+
+// admit charges n jobs to the team's rate limit and sets the rate limit headers.
+// When the submit can't go ahead it writes the refusal and returns false.
+func (h *Jobs) admit(w http.ResponseWriter, r *http.Request, n int) bool {
+	quota, err := h.limits.Admit(r.Context(), services.TeamFrom(r.Context()), n)
+	if quota.Limit > 0 {
+		w.Header().Set("X-RateLimit-Limit", strconv.Itoa(quota.Limit))
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(quota.Remaining))
+	}
+	if err != nil {
+		writeServiceError(w, err)
+		return false
+	}
+	return true
 }
 
 func teamID(r *http.Request) int64 {

@@ -27,6 +27,9 @@ type TeamSummary struct {
 type Usage struct {
 	Queued  int `json:"queued"`
 	Running int `json:"running"`
+	// JobsLastMinute is what the team submitted in the last minute, to set
+	// against its plan's jobs per minute.
+	JobsLastMinute int `json:"jobs_last_minute"`
 }
 
 // APIKey never carries the key itself; only its hash is stored.

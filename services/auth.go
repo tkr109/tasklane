@@ -34,8 +34,8 @@ func displayPrefix(key string) string {
 	return key[:min(len(key), len(keyPrefix)+6)]
 }
 
-// Auth resolves API keys to teams. Answers are cached for a short TTL, so a
-// revoked key or a plan switch takes up to that long to show.
+// Auth resolves API keys to teams. Answers are cached for a short TTL, so a plan
+// switch, or a key revoked through another process, takes up to that long to show.
 type Auth struct {
 	keys *repositories.Keys
 	ttl  time.Duration
@@ -73,6 +73,18 @@ func (a *Auth) Team(ctx context.Context, key string) (models.Team, error) {
 	a.cache[string(hash)] = cachedTeam{team: team, expires: time.Now().Add(a.ttl)}
 	a.mu.Unlock()
 	return team, nil
+}
+
+// forgetTeam drops every cached key of the team, so a revoke shows here at once.
+// Other API processes still catch up within the TTL.
+func (a *Auth) forgetTeam(teamID int64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for hash, c := range a.cache {
+		if c.team.ID == teamID {
+			delete(a.cache, hash)
+		}
+	}
 }
 
 func (a *Auth) cached(hash string) (models.Team, bool) {

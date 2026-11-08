@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/tkr109/tasklane/jobs"
 	"github.com/tkr109/tasklane/models"
@@ -23,14 +24,18 @@ const (
 	maxKeyLength       = 255
 	defaultListLimit   = 50
 	maxListLimit       = 200
+	maxDelay           = 365 * 24 * time.Hour
 )
 
-// JobSpec is what a caller asks for. Nil fields get defaults.
+// JobSpec is what a caller asks for. Nil fields get defaults. A job runs right
+// away unless it gives RunAt or a Delay such as "30m".
 type JobSpec struct {
 	Type        string
 	Payload     json.RawMessage
 	Priority    *int
 	MaxAttempts *int
+	RunAt       *time.Time
+	Delay       string
 }
 
 type Queue struct {
@@ -43,33 +48,59 @@ func NewQueue(repo *repositories.Jobs, types jobs.Registry) *Queue {
 }
 
 func (q *Queue) Submit(ctx context.Context, teamID int64, spec JobSpec, idempotencyKey string) (job models.Job, created bool, err error) {
-	if len(idempotencyKey) > maxKeyLength {
-		return job, false, fmt.Errorf("%w: idempotency key longer than %d characters", ErrInvalid, maxKeyLength)
-	}
-	nj, err := q.newJob(teamID, spec)
+	nj, err := q.Prepare(teamID, spec, idempotencyKey)
 	if err != nil {
 		return job, false, err
 	}
-	nj.IdempotencyKey = idempotencyKey
-	return q.repo.Create(ctx, nj)
+	return q.Enqueue(ctx, nj)
 }
 
 func (q *Queue) SubmitBatch(ctx context.Context, teamID int64, specs []JobSpec) ([]models.Job, error) {
+	batch, err := q.PrepareBatch(teamID, specs)
+	if err != nil {
+		return nil, err
+	}
+	return q.EnqueueBatch(ctx, batch)
+}
+
+// Prepare checks a submit and fills in its defaults without queueing anything,
+// so the API can turn a bad request away before charging its rate limit.
+func (q *Queue) Prepare(teamID int64, spec JobSpec, idempotencyKey string) (models.NewJob, error) {
+	if len(idempotencyKey) > maxKeyLength {
+		return models.NewJob{}, fmt.Errorf("%w: idempotency key longer than %d characters", ErrInvalid, maxKeyLength)
+	}
+	nj, err := newJob(q.types, teamID, spec)
+	nj.IdempotencyKey = idempotencyKey
+	return nj, err
+}
+
+func (q *Queue) PrepareBatch(teamID int64, specs []JobSpec) ([]models.NewJob, error) {
 	if len(specs) == 0 || len(specs) > MaxBatchSize {
 		return nil, fmt.Errorf("%w: a batch holds 1 to %d jobs", ErrInvalid, MaxBatchSize)
 	}
 	batch := make([]models.NewJob, len(specs))
 	for i, spec := range specs {
-		nj, err := q.newJob(teamID, spec)
+		nj, err := newJob(q.types, teamID, spec)
 		if err != nil {
 			return nil, fmt.Errorf("job %d: %w", i, err)
 		}
 		batch[i] = nj
 	}
+	return batch, nil
+}
+
+// Enqueue inserts a prepared job. If the team already used its idempotency key,
+// it returns the original job and created is false.
+func (q *Queue) Enqueue(ctx context.Context, nj models.NewJob) (job models.Job, created bool, err error) {
+	return q.repo.Create(ctx, nj)
+}
+
+func (q *Queue) EnqueueBatch(ctx context.Context, batch []models.NewJob) ([]models.Job, error) {
 	return q.repo.CreateBatch(ctx, batch)
 }
 
-func (q *Queue) newJob(teamID int64, spec JobSpec) (models.NewJob, error) {
+// newJob checks a spec against the submit rules and fills in its defaults.
+func newJob(types jobs.Registry, teamID int64, spec JobSpec) (models.NewJob, error) {
 	nj := models.NewJob{
 		TeamID:      teamID,
 		Type:        spec.Type,
@@ -77,8 +108,8 @@ func (q *Queue) newJob(teamID int64, spec JobSpec) (models.NewJob, error) {
 		Priority:    defaultPriority,
 		MaxAttempts: defaultMaxAttempts,
 	}
-	if _, ok := q.types[spec.Type]; !ok {
-		return nj, fmt.Errorf("%w: unknown job type %q, expected one of %v", ErrInvalid, spec.Type, q.types.Names())
+	if _, ok := types[spec.Type]; !ok {
+		return nj, fmt.Errorf("%w: unknown job type %q, expected one of %v", ErrInvalid, spec.Type, types.Names())
 	}
 	if spec.Priority != nil {
 		if *spec.Priority < 0 || *spec.Priority > 9 {
@@ -95,7 +126,36 @@ func (q *Queue) newJob(teamID int64, spec JobSpec) (models.NewJob, error) {
 	if len(nj.Payload) == 0 || bytes.Equal(nj.Payload, []byte("null")) {
 		nj.Payload = json.RawMessage("{}")
 	}
+	runAt, err := startTime(spec.RunAt, spec.Delay, time.Now())
+	if err != nil {
+		return nj, err
+	}
+	nj.RunAt = runAt
 	return nj, nil
+}
+
+// startTime is when a job asked to run at, or after delay, may start. Nil means
+// right away, which is also what a time in the past gets: a backdated job would
+// otherwise jump the queue through aging.
+func startTime(at *time.Time, delay string, now time.Time) (*time.Time, error) {
+	if at != nil && delay != "" {
+		return nil, fmt.Errorf("%w: give run_at or delay, not both", ErrInvalid)
+	}
+	if delay != "" {
+		d, err := time.ParseDuration(delay)
+		if err != nil || d < 0 {
+			return nil, fmt.Errorf("%w: delay %q is not a duration like 90s or 2h30m", ErrInvalid, delay)
+		}
+		start := now.Add(d)
+		at = &start
+	}
+	if at == nil || !at.After(now) {
+		return nil, nil
+	}
+	if at.Sub(now) > maxDelay {
+		return nil, fmt.Errorf("%w: a job can be delayed by a year at most", ErrInvalid)
+	}
+	return at, nil
 }
 
 // List returns a page of jobs and the cursor for the next page, which is 0 when

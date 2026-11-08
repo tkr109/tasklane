@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 
 	"github.com/tkr109/tasklane/services"
 )
@@ -22,7 +24,15 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 func writeServiceError(w http.ResponseWriter, err error) {
+	var later *services.TryLater
 	switch {
+	case errors.As(err, &later):
+		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(math.Ceil(later.After.Seconds())))))
+		status := http.StatusTooManyRequests
+		if errors.Is(err, services.ErrOverloaded) {
+			status = http.StatusServiceUnavailable
+		}
+		writeError(w, status, err.Error())
 	case errors.Is(err, services.ErrInvalid):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, services.ErrNotFound):

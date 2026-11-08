@@ -51,15 +51,15 @@ func collectJobs(rows pgx.Rows) ([]models.Job, error) {
 func (r *Jobs) Create(ctx context.Context, nj models.NewJob) (job models.Job, created bool, err error) {
 	job, err = scanJob(r.db.QueryRow(ctx, `
 		with inserted as (
-			insert into jobs (team_id, type, payload, priority, max_attempts, idempotency_key)
-			values ($1, $2, $3, $4, $5, nullif($6, ''))
+			insert into jobs (team_id, type, payload, priority, max_attempts, idempotency_key, run_at, ready_at)
+			values ($1, $2, $3, $4, $5, nullif($6, ''), coalesce($7, now()), coalesce($7, now()))
 			on conflict (team_id, idempotency_key) do nothing
 			returning `+jobColumns+`
 		), logged as (
 			insert into job_events (job_id, kind) select id, 'created' from inserted
 		)
 		select * from inserted`,
-		nj.TeamID, nj.Type, nj.Payload, nj.Priority, nj.MaxAttempts, nj.IdempotencyKey))
+		nj.TeamID, nj.Type, nj.Payload, nj.Priority, nj.MaxAttempts, nj.IdempotencyKey, nj.RunAt))
 	if err == nil {
 		r.wakeWorkers(ctx)
 		return job, true, nil
@@ -81,6 +81,7 @@ func (r *Jobs) CreateBatch(ctx context.Context, batch []models.NewJob) ([]models
 		payloads    = make([]string, len(batch))
 		priorities  = make([]int32, len(batch))
 		maxAttempts = make([]int32, len(batch))
+		runAts      = make([]*time.Time, len(batch))
 	)
 	for i, nj := range batch {
 		teams[i] = nj.TeamID
@@ -88,20 +89,21 @@ func (r *Jobs) CreateBatch(ctx context.Context, batch []models.NewJob) ([]models
 		payloads[i] = string(nj.Payload)
 		priorities[i] = int32(nj.Priority)
 		maxAttempts[i] = int32(nj.MaxAttempts)
+		runAts[i] = nj.RunAt
 	}
 
 	rows, err := r.db.Query(ctx, `
 		with inserted as (
-			insert into jobs (team_id, type, payload, priority, max_attempts)
-			select team_id, type, payload::jsonb, priority, max_attempts
-			from unnest($1::bigint[], $2::text[], $3::text[], $4::int[], $5::int[])
-				as u (team_id, type, payload, priority, max_attempts)
+			insert into jobs (team_id, type, payload, priority, max_attempts, run_at, ready_at)
+			select team_id, type, payload::jsonb, priority, max_attempts, coalesce(run_at, now()), coalesce(run_at, now())
+			from unnest($1::bigint[], $2::text[], $3::text[], $4::int[], $5::int[], $6::timestamptz[])
+				as u (team_id, type, payload, priority, max_attempts, run_at)
 			returning `+jobColumns+`
 		), logged as (
 			insert into job_events (job_id, kind) select id, 'created' from inserted
 		)
 		select * from inserted order by id`,
-		teams, types, payloads, priorities, maxAttempts)
+		teams, types, payloads, priorities, maxAttempts, runAts)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +179,7 @@ func (r *Jobs) Retry(ctx context.Context, teamID, id int64) (models.Job, error) 
 	job, err := scanJob(r.db.QueryRow(ctx, `
 		with retried as (
 			update jobs
-			set status = 'queued', attempts = 0, progress = 0, run_at = now(),
+			set status = 'queued', attempts = 0, progress = 0, run_at = now(), ready_at = now(),
 				finished_at = null, updated_at = now()
 			where id = $1 and team_id = $2 and status in ('dead', 'failed', 'cancelled')
 			returning `+jobColumns+`
@@ -196,16 +198,16 @@ func (r *Jobs) Retry(ctx context.Context, teamID, id int64) (models.Job, error) 
 // the given types at each priority level. It locks nothing; Grab does that.
 func (r *Jobs) Backlog(ctx context.Context, types []string) ([]models.Backlog, error) {
 	rows, err := r.db.Query(ctx, `
-		select u.team_id, p.share_weight, u.served, now() - u.served_at, level, now() - head.run_at
+		select u.team_id, p.share_weight, u.served, now() - u.served_at, level, now() - head.ready_at
 		from team_usage u
 		join teams t on t.id = u.team_id
 		join plans p on p.id = t.plan_id
 		cross join generate_series(0, 9) as level
 		cross join lateral (
-			select run_at from jobs
+			select ready_at from jobs
 			where team_id = u.team_id and priority = level
 				and status in ('queued', 'failed') and run_at <= now() and type = any($1)
-			order by run_at, id
+			order by ready_at, id
 			limit 1
 		) head
 		where u.running < p.max_workers`,
@@ -214,6 +216,14 @@ func (r *Jobs) Backlog(ctx context.Context, types []string) ([]models.Backlog, e
 		return nil, err
 	}
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.Backlog])
+}
+
+// CountRunnable counts the jobs of every team that could start right now.
+func (r *Jobs) CountRunnable(ctx context.Context) (int, error) {
+	var n int
+	err := r.db.QueryRow(ctx,
+		`select count(*) from jobs where status in ('queued', 'failed') and run_at <= now()`).Scan(&n)
+	return n, err
 }
 
 // Grab claims the longest-waiting runnable job at one team's priority level, as
@@ -226,7 +236,7 @@ func (r *Jobs) Grab(ctx context.Context, workerID string, teamID int64, priority
 			select id, team_id from jobs
 			where team_id = $2 and priority = $3
 				and status in ('queued', 'failed') and run_at <= now() and type = any($4)
-			order by run_at, id
+			order by ready_at, id
 			limit 1
 			for update skip locked
 		), slot as (
@@ -291,7 +301,8 @@ func (r *Jobs) ScheduleRetry(ctx context.Context, id int64, workerID string, del
 	return r.finish(ctx, `
 		with failed as (
 			update jobs
-			set status = 'failed', run_at = now() + make_interval(secs => $3), last_error = $4,
+			set status = 'failed', run_at = now() + make_interval(secs => $3),
+				ready_at = now() + make_interval(secs => $3), last_error = $4,
 				lease_until = null, locked_by = null, updated_at = now()
 			where id = $1 and locked_by = $2 and status = 'running'
 			returning id
@@ -313,6 +324,52 @@ func (r *Jobs) MarkDead(ctx context.Context, id int64, workerID string, errMsg s
 		id, workerID, errMsg)
 }
 
+// Hold puts a job the worker has just grabbed, but may not start yet because of
+// its type's rate limit, back in the queue for delay. The grab counted an attempt
+// and a turn of the team's fair share; the job never ran, so both are given back,
+// and ready_at stays put so the job keeps its age.
+func (r *Jobs) Hold(ctx context.Context, id int64, workerID string, delay time.Duration, reason string) error {
+	return r.finish(ctx, `
+		with held as (
+			update jobs
+			set status = 'queued', attempts = attempts - 1, run_at = now() + make_interval(secs => $3),
+				throttled_at = now(), lease_until = null, locked_by = null, updated_at = now()
+			where id = $1 and locked_by = $2 and status = 'running'
+			returning id, team_id
+		), unserved as (
+			update team_usage u set served = greatest(u.served - 1, 0)
+			from held where u.team_id = held.team_id
+		)
+		insert into job_events (job_id, kind, message) select id, 'throttled', $4 from held`,
+		id, workerID, delay.Seconds(), reason)
+}
+
+// HeldByLimit counts the waiting jobs of every type whose rate limit pushed a job
+// back in the given window. While a type is at its limit, more workers won't run
+// any of its jobs sooner.
+func (r *Jobs) HeldByLimit(ctx context.Context, within time.Duration) (map[string]int, error) {
+	rows, err := r.db.Query(ctx, `
+		select type, count(*) from jobs
+		where status in ('queued', 'failed') and type in (
+			select type from jobs where throttled_at > now() - make_interval(secs => $1)
+		)
+		group by type`,
+		within.Seconds())
+	if err != nil {
+		return nil, err
+	}
+	counts := map[string]int{}
+	var (
+		jobType string
+		n       int
+	)
+	_, err = pgx.ForEachRow(rows, []any{&jobType, &n}, func() error {
+		counts[jobType] = n
+		return nil
+	})
+	return counts, err
+}
+
 func (r *Jobs) finish(ctx context.Context, query string, args ...any) error {
 	tag, err := r.db.Exec(ctx, query, args...)
 	if err != nil {
@@ -326,8 +383,25 @@ func (r *Jobs) finish(ctx context.Context, query string, args ...any) error {
 
 // ReapExpired takes back running jobs whose lease ran out because their worker
 // died or stalled. They return to the queue, or go dead if that was the last try.
+// Only one reaper runs at a time; the others find the lock taken and reap nothing.
 func (r *Jobs) ReapExpired(ctx context.Context) (int64, error) {
-	tag, err := r.db.Exec(ctx, `
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Two reapers freeing jobs of several teams would lock team rows in different
+	// orders and deadlock.
+	var locked bool
+	if err := tx.QueryRow(ctx, `select pg_try_advisory_xact_lock($1)`, reaperLock).Scan(&locked); err != nil {
+		return 0, err
+	}
+	if !locked {
+		return 0, nil
+	}
+
+	tag, err := tx.Exec(ctx, `
 		with expired as (
 			select id, locked_by from jobs
 			where status = 'running' and lease_until < now()
@@ -347,6 +421,9 @@ func (r *Jobs) ReapExpired(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
 	if tag.RowsAffected() > 0 {
 		r.wakeWorkers(ctx)
 	}
@@ -364,21 +441,28 @@ func (r *Jobs) wakeWorkers(ctx context.Context) {
 // ListenQueued calls wake whenever a job becomes runnable. It holds one connection
 // until ctx ends or the connection fails.
 func (r *Jobs) ListenQueued(ctx context.Context, wake func()) error {
-	pooled, err := r.db.Acquire(ctx)
-	if err != nil {
-		return err
-	}
-	// Take the connection out of the pool for good: it stays subscribed to the channel.
-	conn := pooled.Hijack()
-	defer conn.Close(context.Background())
+	return listen(ctx, r.db, queuedChannel, nil, func(string) { wake() })
+}
 
-	if _, err := conn.Exec(ctx, "listen "+queuedChannel); err != nil {
-		return err
-	}
-	for {
-		if _, err := conn.WaitForNotification(ctx); err != nil {
-			return err
-		}
-		wake()
-	}
+// Overview counts what the dashboard's overview shows, in one round trip. Every
+// count reads a partial index, the queued and failed jobs, or a small table.
+func (r *Jobs) Overview(ctx context.Context) (models.Snapshot, error) {
+	var s models.Snapshot
+	err := r.db.QueryRow(ctx, `
+		select
+			count(*) filter (where status = 'queued'),
+			count(*) filter (where status = 'failed'),
+			count(*) filter (where run_at <= now()),
+			coalesce(extract(epoch from now() - min(ready_at) filter (where run_at <= now())), 0)::float8,
+			(select coalesce(sum(running), 0) from team_usage),
+			(select count(*) from jobs where status = 'succeeded' and finished_at >= date_trunc('day', now())),
+			(select count(*) from jobs where status = 'dead'),
+			(select count(*) from (select distinct type, error_key from jobs where status = 'dead') g),
+			(select count(*) from workers where state = 'running'),
+			(select count(*) from workers where state = 'draining')
+		from jobs
+		where status in ('queued', 'failed')`).Scan(
+		&s.Counts.Queued, &s.Counts.Failed, &s.Runnable, &s.OldestWaitSeconds, &s.Counts.Running,
+		&s.Counts.SucceededToday, &s.Counts.Dead, &s.DeadGroups, &s.Workers.Running, &s.Workers.Draining)
+	return s, err
 }
