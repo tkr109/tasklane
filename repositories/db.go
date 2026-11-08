@@ -59,3 +59,30 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	return nil
 }
+
+// listen subscribes a connection of its own to channel and calls handle with each
+// notification's payload until ctx ends or the connection fails. ready, if set,
+// runs once the subscription is in place.
+func listen(ctx context.Context, db *pgxpool.Pool, channel string, ready func(), handle func(payload string)) error {
+	pooled, err := db.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	// Take the connection out of the pool for good: it stays subscribed to the channel.
+	conn := pooled.Hijack()
+	defer conn.Close(context.Background())
+
+	if _, err := conn.Exec(ctx, "listen "+channel); err != nil {
+		return err
+	}
+	if ready != nil {
+		ready()
+	}
+	for {
+		n, err := conn.WaitForNotification(ctx)
+		if err != nil {
+			return err
+		}
+		handle(n.Payload)
+	}
+}

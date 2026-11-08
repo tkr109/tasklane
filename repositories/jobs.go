@@ -441,21 +441,5 @@ func (r *Jobs) wakeWorkers(ctx context.Context) {
 // ListenQueued calls wake whenever a job becomes runnable. It holds one connection
 // until ctx ends or the connection fails.
 func (r *Jobs) ListenQueued(ctx context.Context, wake func()) error {
-	pooled, err := r.db.Acquire(ctx)
-	if err != nil {
-		return err
-	}
-	// Take the connection out of the pool for good: it stays subscribed to the channel.
-	conn := pooled.Hijack()
-	defer conn.Close(context.Background())
-
-	if _, err := conn.Exec(ctx, "listen "+queuedChannel); err != nil {
-		return err
-	}
-	for {
-		if _, err := conn.WaitForNotification(ctx); err != nil {
-			return err
-		}
-		wake()
-	}
+	return listen(ctx, r.db, queuedChannel, nil, func(string) { wake() })
 }
