@@ -67,12 +67,13 @@ func (r *Workers) Drain(ctx context.Context, id string) error {
 }
 
 // Remove takes a stopping worker off the list. Its last event carries the final
-// count of jobs done, which may be ahead of its last heartbeat.
+// count of jobs done, which may be ahead of its last heartbeat; the scaler, which
+// doesn't know it, passes 0.
 func (r *Workers) Remove(ctx context.Context, id string, jobsDone int64) error {
 	_, err := r.db.Exec(ctx, `
 		with changed as (
 			delete from workers where id = $1
-			returning id, host, 'stopped' as state, started_at, last_seen_at, $2::bigint as jobs_done
+			returning id, host, 'stopped' as state, started_at, last_seen_at, greatest(jobs_done, $2) as jobs_done
 		)`+announceWorkers,
 		id, jobsDone)
 	return err

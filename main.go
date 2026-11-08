@@ -16,6 +16,7 @@ import (
 
 	"github.com/tkr109/tasklane/config"
 	"github.com/tkr109/tasklane/controllers"
+	"github.com/tkr109/tasklane/drivers"
 	"github.com/tkr109/tasklane/jobs"
 	"github.com/tkr109/tasklane/repositories"
 	"github.com/tkr109/tasklane/routes"
@@ -47,7 +48,7 @@ func main() {
 	case "worker":
 		err = runWorker(ctx, cfg)
 	case "scaler":
-		slog.Warn("scaler is not implemented yet")
+		err = runScaler(ctx, cfg)
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -172,4 +173,30 @@ func runWorker(ctx context.Context, cfg config.Config) error {
 	worker := services.NewWorker(repositories.NewJobs(pool), repositories.NewWorkers(pool),
 		repositories.NewRateBuckets(pool), jobs.Defaults(cfg.Jobs), cfg.Worker)
 	return worker.Run(ctx)
+}
+
+func runScaler(ctx context.Context, cfg config.Config) error {
+	pool, err := openDB(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	var driver drivers.Driver = drivers.NewNoop()
+	if cfg.Scaler.Driver == "docker" {
+		// A worker drains for its grace period, then needs a moment to hand back
+		// what it didn't finish and remove its row.
+		docker := drivers.NewDocker(cfg.Scaler.Docker, cfg.Worker.ShutdownGrace+10*time.Second)
+		if err := docker.Ping(ctx); err != nil {
+			return fmt.Errorf("reach docker at %s: %w", cfg.Scaler.Docker.Socket, err)
+		}
+		driver = docker
+	}
+	slog.Info("scaler started", "driver", cfg.Scaler.Driver)
+
+	scaler := services.NewScaler(repositories.NewScaler(pool), repositories.NewJobs(pool), repositories.NewWorkers(pool),
+		services.NewEvents(repositories.NewEvents(pool)), driver, cfg.Scaler, cfg.Worker.Concurrency)
+	scaler.Run(ctx)
+	slog.Info("scaler stopped")
+	return nil
 }

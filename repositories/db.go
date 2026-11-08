@@ -112,6 +112,12 @@ func (l *Leader) TryLead(ctx context.Context) (bool, error) {
 	return ok, err
 }
 
+// Alive checks the connection still works, and so that a lock taken on it is
+// still held.
+func (l *Leader) Alive(ctx context.Context) error {
+	return l.conn.Ping(ctx)
+}
+
 func (l *Leader) Close() {
 	if err := l.conn.Close(context.Background()); err != nil {
 		slog.Warn("close a leader connection", "err", err)
