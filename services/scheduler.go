@@ -26,7 +26,8 @@ func NewScheduler(repo *repositories.Schedules, tick time.Duration) *Scheduler {
 	return &Scheduler{repo: repo, tick: tick}
 }
 
-// Leading reports whether this process is the one firing schedules.
+// Leading reports whether this process holds the lead. One whose connection has
+// just died may think so for up to a tick, but it can't fire through a dead one.
 func (s *Scheduler) Leading() bool {
 	return s.leading.Load()
 }
@@ -36,7 +37,6 @@ func (s *Scheduler) Leading() bool {
 func (s *Scheduler) Run(ctx context.Context) {
 	for {
 		err := s.session(ctx)
-		s.leading.Store(false)
 		if ctx.Err() != nil {
 			return
 		}
@@ -58,6 +58,8 @@ func (s *Scheduler) session(ctx context.Context) error {
 		return err
 	}
 	defer conn.Close()
+	// Step down before the connection, and the lock with it, goes.
+	defer s.leading.Store(false)
 
 	t := time.NewTicker(s.tick)
 	defer t.Stop()
