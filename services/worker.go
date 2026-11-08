@@ -29,6 +29,7 @@ type Worker struct {
 	workers *repositories.Workers
 	types   jobs.Registry
 
+	wake    chan struct{}
 	running sync.WaitGroup
 }
 
@@ -41,6 +42,7 @@ func NewWorker(repo *repositories.Jobs, workers *repositories.Workers, types job
 		repo:    repo,
 		workers: workers,
 		types:   types,
+		wake:    make(chan struct{}, 1),
 	}
 }
 
@@ -62,6 +64,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	defer stopBeat()
 	go w.heartbeat(beatCtx)
 	go w.reap(ctx)
+	go w.listen(ctx)
 
 	w.loop(ctx, context.WithoutCancel(ctx))
 
@@ -110,6 +113,7 @@ func (w *Worker) loop(ctx, jobCtx context.Context) {
 				slog.Error("grab job", "worker", w.id, "err", err)
 			}
 			select {
+			case <-w.wake:
 			case <-time.After(w.cfg.PollInterval):
 			case <-ctx.Done():
 				return
@@ -121,6 +125,28 @@ func (w *Worker) loop(ctx, jobCtx context.Context) {
 			defer func() { <-slots }()
 			w.execute(jobCtx, job)
 		})
+	}
+}
+
+// listen turns Postgres notifications into wakeups for the grab loop, so new jobs
+// start right away instead of on the next poll.
+func (w *Worker) listen(ctx context.Context) {
+	for {
+		err := w.repo.ListenQueued(ctx, func() {
+			select {
+			case w.wake <- struct{}{}:
+			default:
+			}
+		})
+		if ctx.Err() != nil {
+			return
+		}
+		slog.Warn("listen for new jobs, retrying", "worker", w.id, "err", err)
+		select {
+		case <-time.After(time.Second):
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 

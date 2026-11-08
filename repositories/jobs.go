@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -12,6 +13,9 @@ import (
 
 	"github.com/tkr109/tasklane/models"
 )
+
+// queuedChannel is where workers hear that a job became runnable.
+const queuedChannel = "tasklane_jobs_queued"
 
 const jobColumns = `id, team_id, type, payload, priority, status, attempts, max_attempts, run_at,
 	lease_until, coalesce(locked_by, '') as locked_by, coalesce(idempotency_key, '') as idempotency_key,
@@ -57,6 +61,7 @@ func (r *Jobs) Create(ctx context.Context, nj models.NewJob) (job models.Job, cr
 		select * from inserted`,
 		nj.TeamID, nj.Type, nj.Payload, nj.Priority, nj.MaxAttempts, nj.IdempotencyKey))
 	if err == nil {
+		r.wakeWorkers(ctx)
 		return job, true, nil
 	}
 	if !errors.Is(err, ErrNotFound) || nj.IdempotencyKey == "" {
@@ -100,7 +105,11 @@ func (r *Jobs) CreateBatch(ctx context.Context, batch []models.NewJob) ([]models
 	if err != nil {
 		return nil, err
 	}
-	return collectJobs(rows)
+	created, err := collectJobs(rows)
+	if err == nil {
+		r.wakeWorkers(ctx)
+	}
+	return created, err
 }
 
 func (r *Jobs) Get(ctx context.Context, teamID, id int64) (models.Job, error) {
@@ -165,7 +174,7 @@ func (r *Jobs) Cancel(ctx context.Context, teamID, id int64) (models.Job, error)
 // Retry puts a dead, failed or cancelled job back in the queue with a fresh set
 // of attempts.
 func (r *Jobs) Retry(ctx context.Context, teamID, id int64) (models.Job, error) {
-	return scanJob(r.db.QueryRow(ctx, `
+	job, err := scanJob(r.db.QueryRow(ctx, `
 		with retried as (
 			update jobs
 			set status = 'queued', attempts = 0, progress = 0, run_at = now(),
@@ -177,6 +186,10 @@ func (r *Jobs) Retry(ctx context.Context, teamID, id int64) (models.Job, error) 
 		)
 		select * from retried`,
 		id, teamID))
+	if err == nil {
+		r.wakeWorkers(ctx)
+	}
+	return job, err
 }
 
 // Grab claims the most urgent runnable job of one of the given types for a worker.
@@ -295,5 +308,41 @@ func (r *Jobs) ReapExpired(ctx context.Context) (int64, error) {
 		insert into job_events (job_id, kind, message)
 		select id, 'lease_expired', format('%s stopped renewing the lease, job is %s', locked_by, status)
 		from reaped`)
-	return tag.RowsAffected(), err
+	if err != nil {
+		return 0, err
+	}
+	if tag.RowsAffected() > 0 {
+		r.wakeWorkers(ctx)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// wakeWorkers runs after the write has committed, so a woken worker can see the
+// job. A lost notification only costs a poll interval, hence no error.
+func (r *Jobs) wakeWorkers(ctx context.Context) {
+	if _, err := r.db.Exec(ctx, `select pg_notify($1, '')`, queuedChannel); err != nil {
+		slog.Warn("notify workers", "err", err)
+	}
+}
+
+// ListenQueued calls wake whenever a job becomes runnable. It holds one connection
+// until ctx ends or the connection fails.
+func (r *Jobs) ListenQueued(ctx context.Context, wake func()) error {
+	pooled, err := r.db.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	// Take the connection out of the pool for good: it stays subscribed to the channel.
+	conn := pooled.Hijack()
+	defer conn.Close(context.Background())
+
+	if _, err := conn.Exec(ctx, "listen "+queuedChannel); err != nil {
+		return err
+	}
+	for {
+		if _, err := conn.WaitForNotification(ctx); err != nil {
+			return err
+		}
+		wake()
+	}
 }
