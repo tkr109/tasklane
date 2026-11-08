@@ -29,6 +29,9 @@ interface QueueChartProps {
 
 const TICK_EVERY_MS = 30_000
 
+// The API keeps 150 one-second samples.
+const WINDOW_MS = 150_000
+
 function QueueTooltip({ active, payload }: TooltipContentProps) {
   const point = payload?.[0]?.payload as Point | undefined
   if (!active || !point) return null
@@ -49,8 +52,9 @@ function QueueTooltip({ active, payload }: TooltipContentProps) {
 
 export function QueueChart({ samples, maxWorkers, floodAt }: QueueChartProps) {
   const data: Point[] = samples.map((s) => ({ at: new Date(s.at).getTime(), queued: s.queued, workers: s.workers }))
-  const first = data[0]?.at ?? 0
   const last = data.at(-1)?.at ?? 0
+  // A fixed window, so a short history after the API starts sits at the right instead of filling the chart.
+  const first = last - WINDOW_MS
   const ticks: number[] = []
   for (let t = last; t >= first; t -= TICK_EVERY_MS) ticks.unshift(t)
   const workerMax = maxWorkers ?? Math.max(5, Math.ceil(Math.max(...data.map((p) => p.workers)) / 5) * 5)
@@ -76,7 +80,8 @@ export function QueueChart({ samples, maxWorkers, floodAt }: QueueChartProps) {
           <XAxis
             dataKey="at"
             type="number"
-            domain={['dataMin', 'dataMax']}
+            domain={[first, last]}
+            allowDataOverflow
             ticks={ticks}
             tickFormatter={(t: number) => (t === last ? 'now' : formatClock(t))}
             tickLine={false}

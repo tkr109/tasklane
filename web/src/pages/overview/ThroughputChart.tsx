@@ -5,7 +5,12 @@ import { formatShort } from '../../lib/format'
 const WINDOW = 60
 
 export function ThroughputChart({ samples }: { samples: Sample[] }) {
-  const data = samples.slice(-WINDOW).map((s, i, list) => ({ ...s, secondsAgo: list.length - 1 - i }))
+  // Always 60 bars, empty where there is no sample yet, so bars keep their width on a fresh API.
+  const data = Array.from({ length: WINDOW }, (_, i) => {
+    const secondsAgo = WINDOW - 1 - i
+    const sample = samples.at(-1 - secondsAgo)
+    return { secondsAgo, succeeded: sample?.succeeded, failed: sample?.failed }
+  })
   const labels: Record<number, string> = { [WINDOW - 1]: '60s ago', 30: '30s ago', 0: 'now' }
 
   return (

@@ -26,7 +26,8 @@ function Tile({ to, color, label, value, detail }: TileProps) {
 
 export function CountTiles({ stats }: { stats: Stats }) {
   const { counts, workers } = stats
-  const perMinute = stats.samples.slice(-10).reduce((sum, s) => sum + s.succeeded, 0) * 6
+  const recent = stats.samples.slice(-10)
+  const perMinute = (recent.reduce((sum, s) => sum + s.succeeded, 0) / Math.max(1, recent.length)) * 60
 
   return (
     <div className="tiles">
