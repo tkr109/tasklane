@@ -124,6 +124,6 @@ func runWorker(ctx context.Context, cfg config.Config) error {
 	}
 	defer pool.Close()
 
-	worker := services.NewWorker(repositories.NewJobs(pool), jobs.Defaults(), cfg.Worker)
+	worker := services.NewWorker(repositories.NewJobs(pool), repositories.NewWorkers(pool), jobs.Defaults(), cfg.Worker)
 	return worker.Run(ctx)
 }

@@ -22,21 +22,25 @@ var (
 )
 
 type Worker struct {
-	id    string
-	cfg   config.Worker
-	repo  *repositories.Jobs
-	types jobs.Registry
+	id      string
+	host    string
+	cfg     config.Worker
+	repo    *repositories.Jobs
+	workers *repositories.Workers
+	types   jobs.Registry
 
 	running sync.WaitGroup
 }
 
-func NewWorker(repo *repositories.Jobs, types jobs.Registry, cfg config.Worker) *Worker {
+func NewWorker(repo *repositories.Jobs, workers *repositories.Workers, types jobs.Registry, cfg config.Worker) *Worker {
 	host, _ := os.Hostname()
 	return &Worker{
-		id:    fmt.Sprintf("%s-%08x", host, rand.Uint32()),
-		cfg:   cfg,
-		repo:  repo,
-		types: types,
+		id:      fmt.Sprintf("%s-%08x", host, rand.Uint32()),
+		host:    host,
+		cfg:     cfg,
+		repo:    repo,
+		workers: workers,
+		types:   types,
 	}
 }
 
@@ -48,15 +52,45 @@ func (w *Worker) ID() string {
 // already holds.
 func (w *Worker) Run(ctx context.Context) error {
 	log := slog.With("worker", w.id)
+	if err := w.workers.Heartbeat(ctx, w.id, w.host); err != nil {
+		return fmt.Errorf("register worker: %w", err)
+	}
 	log.Info("worker started", "concurrency", w.cfg.Concurrency, "types", w.types.Names())
 
+	// The heartbeat outlives ctx so the worker still shows as alive while it drains.
+	beatCtx, stopBeat := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopBeat()
+	go w.heartbeat(beatCtx)
 	go w.reap(ctx)
+
 	w.loop(ctx, context.WithoutCancel(ctx))
 
 	log.Info("worker draining")
 	w.running.Wait()
+	stopBeat()
+
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := w.workers.Remove(cleanupCtx, w.id); err != nil {
+		log.Warn("remove worker row", "err", err)
+	}
 	log.Info("worker stopped")
 	return nil
+}
+
+func (w *Worker) heartbeat(ctx context.Context) {
+	t := time.NewTicker(w.cfg.HeartbeatInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if err := w.workers.Heartbeat(ctx, w.id, w.host); err != nil && ctx.Err() == nil {
+			slog.Warn("heartbeat", "worker", w.id, "err", err)
+		}
+	}
 }
 
 func (w *Worker) loop(ctx, jobCtx context.Context) {
