@@ -76,7 +76,7 @@ func testDB(t *testing.T) *pgxpool.Pool {
 	if _, err := pgPool.Exec(context.Background(), `
 		truncate jobs, job_events, api_keys, rate_buckets, workers, scaler_decisions, scaler_status restart identity;
 		delete from teams where name <> 'default';
-		update team_usage set running = 0, served = 0, served_at = now()`); err != nil {
+		update team_usage set served = 0, served_at = now()`); err != nil {
 		t.Fatalf("reset tables: %v", err)
 	}
 	return pgPool

@@ -81,8 +81,8 @@ There is no `utils/` folder; a helper lives next to the code that uses it.
 - `workers`: id, host, state (starting, running or draining), started_at, last_seen_at
   (heartbeat), jobs_done (sent with each heartbeat). There is no current-job column: a
   worker's running jobs are the ones whose `jobs.locked_by` is its id.
-- `team_usage`: team_id, running (jobs running now), served (a decaying count of jobs
-  started), served_at. Used for fair share.
+- `team_usage`: team_id, served (a decaying count of jobs started), served_at. Used for fair
+  share, and grabs for a team take turns on its row. Running jobs are counted, not stored.
 - `rate_buckets`: key (`team:<id>` or `type:<name>`), tokens, updated_at
 - `scaler_decisions`: at, action (up, down, hold), from_workers, to_workers, reason; the
   latest 200
@@ -157,19 +157,25 @@ A grab is two queries with a decision in Go between them.
 2. **Pick.** A team's share is its served count divided by its plan weight. The lowest share
    is furthest behind, so teams are tried in that order. Inside a team, the level whose
    oldest job has the highest aged priority wins.
-3. **Grab** from that team and level, in one statement: lock the oldest job there with
-   `SKIP LOCKED`, bump the team's `team_usage` row only if `running < max_workers`, and mark
-   the job running only if that bump happened. If the level ran dry or the team filled up in
-   the meantime, the next team in line is tried.
+3. **Grab** from that team and level, in one round trip of two statements in one
+   transaction. The first locks the team's `team_usage` row. The second locks the oldest job
+   at that level with `SKIP LOCKED`, bumps the team's served count only if it has fewer
+   running jobs than its cap, and marks the job running only if that bump happened. If the
+   level ran dry or the team filled up in the meantime, the next team in line is tried.
 
 Why this holds with many workers grabbing at once:
 
 - `SKIP LOCKED` means no two workers claim the same job and none waits on another's job row.
   Workers that pick the same team and level just take the next oldest job.
-- Grabs for the same team queue on its `team_usage` row. After the wait, Postgres rechecks
-  `running < max_workers` against the latest committed count, so a team can't pass its cap.
-- `running` is kept by a trigger on `jobs.status`, so every way in and out of `running`
-  (grab, finish, retry, reaper) updates it in the same transaction.
+- Grabs for the same team queue on its `team_usage` row. In read committed each statement
+  takes a fresh snapshot, so the second one, run once the lock is held, counts the jobs every
+  earlier grab of the team started. A team can't pass its cap. With the lock and the count in
+  one statement, the count would come from before the wait and let several grabs through.
+- Running jobs are counted with a partial index on `(team_id) where status = 'running'`,
+  a handful of entries per team. Nothing that takes a job out of `running` (a finish, a
+  retry, the reaper) touches the team's row, so none of them waits behind the team's grabs.
+  An earlier version kept `running` in `team_usage` with a trigger; `docs/benchmarks.md` has
+  why it went.
 - `served` decays by a factor of e every `FAIR_SHARE_WINDOW` (a minute), so it roughly counts
   the last minute. Old work doesn't count against a team for long, and a team coming back
   from idle catches up for at most about a window.
@@ -178,10 +184,12 @@ When every team is busy, always serving the lowest served-per-weight keeps those
 level, so served counts follow the 1:3:10 weights. Caps still apply on top: a team whose
 fair share is more slots than its cap stops at the cap, and the spare slots go to the others.
 
-Lock order: a grab locks a job row and then its team's row; a finish does the same through
-the trigger. Nothing waits on a job row while holding a team row, so grabs and finishes
-can't deadlock. Two reapers freeing jobs of several teams at once could, so the reaper runs
-under an advisory transaction lock: one reaps, the others skip that tick.
+Lock order: a grab locks its team's row and then a job row, and skips a job row that is
+taken rather than waiting for it. A finish, a retry and the reaper lock only job rows. A
+rate limit hold locks its own job row and then the team's, to give back the turn. Nothing
+waits on a job row while holding a team row, so nothing can deadlock. The reaper still runs
+under an advisory transaction lock, as reapers on every worker would only skip each other's
+rows: one reaps, the others skip that tick.
 
 ## Auth
 

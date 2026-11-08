@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -210,13 +212,35 @@ func TestTeamsStayUnderTheirWorkerCap(t *testing.T) {
 		if peak := l.peakFor(team); peak > limit {
 			t.Errorf("team %d ran %d jobs at once, its cap is %d", team, peak, limit)
 		}
-		var running int
-		if err := pool.QueryRow(ctx, `select running from team_usage where team_id = $1`, team).Scan(&running); err != nil {
-			t.Fatal(err)
-		}
-		if running != 0 {
-			t.Errorf("team %d still counts %d running jobs after the queue drained", team, running)
-		}
+	}
+}
+
+func TestRacingGrabsStopAtTheCap(t *testing.T) {
+	pool := testDB(t)
+	free := createTeam(t, pool, "free", "free")
+	fill(t, pool, free, 20)
+
+	// Every grab but the first waits for the team's row, and must then see the
+	// jobs the grabs before it started.
+	repo := repositories.NewJobs(pool)
+	var (
+		wg      sync.WaitGroup
+		grabbed atomic.Int64
+	)
+	for i := range 30 {
+		wg.Go(func() {
+			_, err := repo.Grab(context.Background(), fmt.Sprintf("w%d", i), free, 5, []string{"work"}, time.Minute, time.Minute)
+			switch {
+			case err == nil:
+				grabbed.Add(1)
+			case !errors.Is(err, repositories.ErrNotFound):
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if n := grabbed.Load(); n != 2 {
+		t.Errorf("%d grabs got a job, want the free plan's cap of 2", n)
 	}
 }
 

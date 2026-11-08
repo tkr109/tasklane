@@ -216,7 +216,7 @@ func (r *Jobs) Backlog(ctx context.Context, types []string) ([]models.Backlog, e
 			order by ready_at, id
 			limit 1
 		) head
-		where u.running < p.max_workers`,
+		where (select count(*) from jobs where team_id = u.team_id and status = 'running') < p.max_workers`,
 		types)
 	if err != nil {
 		return nil, err
@@ -237,7 +237,12 @@ func (r *Jobs) CountRunnable(ctx context.Context) (int, error) {
 // LOCKED lets many workers grab at once without waiting on, or double claiming,
 // the same row. ErrNotFound means the level has run dry or the team is full.
 func (r *Jobs) Grab(ctx context.Context, workerID string, teamID int64, priority int, types []string, lease, fairShareWindow time.Duration) (models.Job, error) {
-	return scanJob(r.db.QueryRow(ctx, `
+	// A batch is one transaction, but each statement gets a fresh snapshot. Grabs
+	// for a team take turns on its row, so the second statement counts the jobs
+	// that the grab before this one started, and the cap holds.
+	batch := &pgx.Batch{}
+	batch.Queue(`select from team_usage where team_id = $1 for update`, teamID)
+	batch.Queue(`
 		with picked as (
 			select id, team_id from jobs
 			where team_id = $2 and priority = $3
@@ -246,14 +251,12 @@ func (r *Jobs) Grab(ctx context.Context, workerID string, teamID int64, priority
 			limit 1
 			for update skip locked
 		), slot as (
-			-- Concurrent grabs for a team queue up on this row, and each one rechecks
-			-- running against the latest count, so the cap holds.
 			update team_usage u
 			set served = u.served * exp(extract(epoch from u.served_at - now()) / $6) + 1,
 				served_at = now()
 			from picked, teams t, plans p
 			where u.team_id = picked.team_id and t.id = u.team_id and p.id = t.plan_id
-				and u.running < p.max_workers
+				and (select count(*) from jobs where team_id = u.team_id and status = 'running') < p.max_workers
 			returning u.team_id
 		), grabbed as (
 			update jobs
@@ -267,7 +270,16 @@ func (r *Jobs) Grab(ctx context.Context, workerID string, teamID int64, priority
 			select id, 'started', format('attempt %s on %s', attempts, locked_by) from grabbed
 		)
 		select * from grabbed`,
-		workerID, teamID, priority, types, lease.Seconds(), fairShareWindow.Seconds()))
+		workerID, teamID, priority, types, lease.Seconds(), fairShareWindow.Seconds())
+
+	results := r.db.SendBatch(ctx, batch)
+	_, err := results.Exec()
+	var job models.Job
+	if err == nil {
+		job, err = scanJob(results.QueryRow())
+	}
+	// Close commits, and a grab that didn't commit hasn't claimed anything.
+	return job, errors.Join(err, results.Close())
 }
 
 // ExtendLease pushes the lease out again. It returns false when the worker no
@@ -397,8 +409,7 @@ func (r *Jobs) ReapExpired(ctx context.Context) (int64, error) {
 	}
 	defer tx.Rollback(ctx)
 
-	// Two reapers freeing jobs of several teams would lock team rows in different
-	// orders and deadlock.
+	// Reapers on every worker would only skip each other's rows; one is enough.
 	var locked bool
 	if err := tx.QueryRow(ctx, `select pg_try_advisory_xact_lock($1)`, reaperLock).Scan(&locked); err != nil {
 		return 0, err
@@ -462,14 +473,16 @@ func (r *Jobs) Demand(ctx context.Context, skip []string) (models.Demand, error)
 			select team_id, count(*) as jobs, min(ready_at) as oldest from jobs
 			where status in ('queued', 'failed') and run_at <= now() and type <> all($1)
 			group by team_id
+		), running as (
+			select team_id, count(*) as jobs from jobs where status = 'running' group by team_id
 		)
 		select coalesce(sum(w.jobs), 0)::int,
 			coalesce(extract(epoch from now() - min(w.oldest)), 0)::float8,
-			coalesce(sum(least(coalesce(w.jobs, 0) + u.running, p.max_workers)), 0)::int
-		from team_usage u
-		join teams t on t.id = u.team_id
+			coalesce(sum(least(coalesce(w.jobs, 0) + coalesce(r.jobs, 0), p.max_workers)), 0)::int
+		from teams t
 		join plans p on p.id = t.plan_id
-		left join waiting w on w.team_id = u.team_id`,
+		left join waiting w on w.team_id = t.id
+		left join running r on r.team_id = t.id`,
 		// A nil slice goes as NULL, and type <> all(NULL) would match nothing.
 		append([]string{}, skip...)).Scan(&d.Runnable, &wait, &d.Slots)
 	d.OldestWait = time.Duration(wait * float64(time.Second))
@@ -487,7 +500,7 @@ func (r *Jobs) Overview(ctx context.Context) (models.Snapshot, error) {
 			count(*) filter (where status = 'failed'),
 			count(*) filter (where run_at <= now()),
 			coalesce(extract(epoch from now() - min(ready_at) filter (where run_at <= now())), 0)::float8,
-			(select coalesce(sum(running), 0) from team_usage),
+			(select count(*) from jobs where status = 'running'),
 			(select count(*) from jobs where status = 'succeeded' and finished_at >= date_trunc('day', now())),
 			(select count(*) from jobs where status = 'dead'),
 			(select count(*) from (select distinct type, error_key from jobs where status = 'dead') g),

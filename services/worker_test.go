@@ -271,13 +271,6 @@ func TestReapersRunOneAtATime(t *testing.T) {
 	if got := countEvents(t, pool, "lease_expired"); got != 200 {
 		t.Errorf("%d lease_expired events, want 200", got)
 	}
-	var running int
-	if err := pool.QueryRow(ctx, `select coalesce(sum(running), 0) from team_usage`).Scan(&running); err != nil {
-		t.Fatal(err)
-	}
-	if running != 0 {
-		t.Errorf("teams still count %d running jobs", running)
-	}
 }
 
 func TestJobGoesDeadAfterMaxAttempts(t *testing.T) {
