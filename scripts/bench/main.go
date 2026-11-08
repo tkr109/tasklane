@@ -259,8 +259,8 @@ func (b *bench) report(ctx context.Context, after int64, jobType string, teams i
 	if err != nil {
 		return err
 	}
-	// A worker's time per job splits into running it, up to the finish, and the
-	// time from there to its next start, which is the queue's own overhead.
+	// A worker's time per job, split at the finish. Both ends are transaction
+	// start times, so a grab's wait for its team's row counts in the first part.
 	err = b.db.QueryRow(ctx, `
 		with started as (
 			select e.at, j.finished_at, split_part(e.message, ' on ', 2) as worker
@@ -280,7 +280,7 @@ func (b *bench) report(ctx context.Context, after int64, jobType string, teams i
 	fmt.Printf("%d %s jobs from %d team(s), submitted in %.1fs\n", n, jobType, teams, submitted.Seconds())
 	fmt.Printf("drained in %.1fs: %.0f jobs/s, up to %d workers\n", drain, float64(n)/drain, w.maxWorkers)
 	fmt.Printf("queue wait p50 %.1fs, p95 %.1fs, p99 %.1fs\n", p50, p95, p99)
-	fmt.Printf("per job on a worker: %.1fms running, %.1fms until its next start\n", run, between)
+	fmt.Printf("per job on a worker: %.1fms from grab to finish, %.1fms from there to the next grab\n", run, between)
 	fmt.Printf("%d WAL flushes, %.2f per job\n", flushes, float64(flushes)/float64(n))
 
 	rows, err := b.db.Query(ctx, `
