@@ -67,13 +67,14 @@ func (r *Teams) PlanByName(ctx context.Context, name string) (models.Plan, error
 	return plan, err
 }
 
-// List returns every team with its plan and how many of its jobs are waiting or
-// running right now.
+// List returns every team with its plan, how many of its jobs are waiting or
+// running right now, and how many it sent in the last minute.
 func (r *Teams) List(ctx context.Context) ([]models.TeamSummary, error) {
 	rows, err := r.db.Query(ctx, `
 		select `+teamColumns+`,
 			count(j.id) filter (where j.status in ('queued', 'failed')),
-			count(j.id) filter (where j.status = 'running')
+			count(j.id) filter (where j.status = 'running'),
+			(select count(*) from jobs m where m.team_id = t.id and m.created_at > now() - interval '1 minute')
 		from teams t
 		join plans p on p.id = t.plan_id
 		left join jobs j on j.team_id = t.id and j.status in ('queued', 'failed', 'running')
@@ -85,7 +86,7 @@ func (r *Teams) List(ctx context.Context) ([]models.TeamSummary, error) {
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (models.TeamSummary, error) {
 		var s models.TeamSummary
 		var err error
-		s.Team, err = scanTeam(row, &s.Usage.Queued, &s.Usage.Running)
+		s.Team, err = scanTeam(row, &s.Usage.Queued, &s.Usage.Running, &s.Usage.JobsLastMinute)
 		return s, err
 	})
 }
