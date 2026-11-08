@@ -76,6 +76,11 @@ export const handlers = [
     return withTeam(request, (team) => world.createSchedule(team, body), 201)
   }),
 
+  http.put('/api/schedules/:id', async ({ params, request }) => {
+    const body = (await request.json()) as ScheduleSpec
+    return withTeam(request, (team) => world.updateSchedule(team, idParam(params.id), body))
+  }),
+
   http.delete('/api/schedules/:id', async ({ params, request }) => {
     await delay(120)
     try {

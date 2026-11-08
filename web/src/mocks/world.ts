@@ -325,40 +325,26 @@ export class World {
     return { schedules: this.schedules.filter((s) => s.team_id === teamId) }
   }
 
-  // Checks the cron's shape only; every mock schedule fires once a minute.
   createSchedule(teamId: number, spec: ScheduleSpec): Schedule {
-    const cron = spec.cron?.trim() ?? ''
-    if (!cron.startsWith('@') && cron.split(/\s+/).length !== 5) {
-      throw new MockError(400, `invalid request: cron "${cron}" needs five fields or a descriptor such as @hourly`)
-    }
-    if (!JOB_TYPES[spec.type]) {
-      throw new MockError(400, `invalid request: unknown job type "${spec.type}", expected one of [${TYPE_NAMES.join(' ')}]`)
-    }
+    const fields = this.scheduleFields(spec)
     if (this.listSchedules(teamId).schedules.length >= 50) {
       throw new MockError(409, 'conflict: a team can have at most 50 schedules')
     }
-    const now = Date.now()
-    const schedule: Schedule = {
-      id: this.nextScheduleId++,
-      team_id: teamId,
-      cron,
-      timezone: spec.timezone || 'UTC',
-      type: spec.type,
-      payload: spec.payload ?? {},
-      priority: spec.priority ?? 5,
-      max_attempts: spec.max_attempts ?? 5,
-      enabled: spec.enabled ?? true,
-      next_run_at: iso(Math.ceil((now + 1) / MINUTE) * MINUTE),
-      created_at: iso(now),
-      updated_at: iso(now),
-    }
+    const now = iso(Date.now())
+    const schedule: Schedule = { id: this.nextScheduleId++, team_id: teamId, ...fields, created_at: now, updated_at: now }
     this.schedules.push(schedule)
     return schedule
   }
 
+  // A PUT replaces the whole schedule, as the API's does.
+  updateSchedule(teamId: number, id: number, spec: ScheduleSpec): Schedule {
+    const schedule = this.ownSchedule(teamId, id)
+    Object.assign(schedule, this.scheduleFields(spec), { updated_at: iso(Date.now()) })
+    return schedule
+  }
+
   deleteSchedule(teamId: number, id: number) {
-    const schedule = this.schedules.find((s) => s.id === id && s.team_id === teamId)
-    if (!schedule) throw new MockError(404, 'schedule not found')
+    const schedule = this.ownSchedule(teamId, id)
     this.schedules = this.schedules.filter((s) => s !== schedule)
   }
 
@@ -1044,6 +1030,33 @@ export class World {
 
   private newKey(teamId: number, secret: string, createdAt: number): MockKey {
     return { id: this.nextKeyId++, team_id: teamId, prefix: displayPrefix(secret), created_at: iso(createdAt), secret }
+  }
+
+  private ownSchedule(teamId: number, id: number) {
+    const schedule = this.schedules.find((s) => s.id === id && s.team_id === teamId)
+    if (!schedule) throw new MockError(404, 'schedule not found')
+    return schedule
+  }
+
+  // Checks the cron's shape only; every mock schedule fires once a minute.
+  private scheduleFields(spec: ScheduleSpec) {
+    const cron = spec.cron?.trim() ?? ''
+    if (!cron.startsWith('@') && cron.split(/\s+/).length !== 5) {
+      throw new MockError(400, `invalid request: cron "${cron}" needs five fields or a descriptor such as @hourly`)
+    }
+    if (!JOB_TYPES[spec.type]) {
+      throw new MockError(400, `invalid request: unknown job type "${spec.type}", expected one of [${TYPE_NAMES.join(' ')}]`)
+    }
+    return {
+      cron,
+      timezone: spec.timezone || 'UTC',
+      type: spec.type,
+      payload: spec.payload ?? {},
+      priority: spec.priority ?? 5,
+      max_attempts: spec.max_attempts ?? 5,
+      enabled: spec.enabled ?? true,
+      next_run_at: iso(Math.ceil((Date.now() + 1) / MINUTE) * MINUTE),
+    }
   }
 
   private ownJob(teamId: number, id: number) {

@@ -48,6 +48,10 @@
   white-space: nowrap;
 }
 
+.tbl td.actions > .btn + .btn {
+  margin-left: 6px;
+}
+
 @media (max-width: 820px) {
   .schedule-form {
     grid-template-columns: minmax(0, 1fr);

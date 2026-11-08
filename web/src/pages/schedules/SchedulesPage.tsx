@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { describeError } from '../../api/client'
 import { queryKeys } from '../../api/keys'
 import { schedulesQuery, statsQuery } from '../../api/queries'
-import { createSchedule, deleteSchedule } from '../../api/schedules'
+import { createSchedule, deleteSchedule, updateSchedule } from '../../api/schedules'
 import type { Schedule } from '../../api/types'
 import { PageHeader } from '../../components/PageHeader'
 import { QueryNotice } from '../../components/QueryNotice'
@@ -43,6 +43,24 @@ export function SchedulesPage() {
       )
       toast(`Schedule ${schedule.id} created. It first runs at ${formatClock(schedule.next_run_at)}.`)
     },
+  })
+
+  // The PUT replaces the whole schedule, so it sends the rest back unchanged.
+  const toggle = useMutation({
+    mutationFn: ({ id, cron, timezone, type, payload, priority, max_attempts, enabled }: Schedule) =>
+      updateSchedule(id, { cron, timezone, type, payload, priority, max_attempts, enabled: !enabled }),
+    onSuccess: (schedule) => {
+      queryClient.setQueryData<{ schedules: Schedule[] }>(
+        queryKeys.schedules,
+        (prev) => prev && { schedules: prev.schedules.map((s) => (s.id === schedule.id ? schedule : s)) },
+      )
+      toast(
+        schedule.enabled
+          ? `Schedule ${schedule.id} resumed. It next runs at ${formatClock(schedule.next_run_at)}.`
+          : `Schedule ${schedule.id} paused. It queues nothing until you resume it.`,
+      )
+    },
+    onError: (err) => toast(describeError(err)),
   })
 
   const remove = useMutation({
@@ -132,9 +150,18 @@ export function SchedulesPage() {
                           </button>
                         </span>
                       ) : (
-                        <button className="btn sm ghost" onClick={() => setConfirming(s.id)}>
-                          Delete
-                        </button>
+                        <>
+                          <button
+                            className="btn sm ghost"
+                            disabled={toggle.isPending && toggle.variables.id === s.id}
+                            onClick={() => toggle.mutate(s)}
+                          >
+                            {s.enabled ? 'Pause' : 'Resume'}
+                          </button>
+                          <button className="btn sm ghost" onClick={() => setConfirming(s.id)}>
+                            Delete
+                          </button>
+                        </>
                       )}
                     </td>
                   </tr>
