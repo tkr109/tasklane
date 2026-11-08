@@ -12,14 +12,14 @@ import (
 
 const maxBodyBytes = 1 << 20
 
+// Jobs serves the API that apps call with their key. Every handler works on the
+// team the auth middleware resolved.
 type Jobs struct {
 	queue *services.Queue
-	// Every request runs as this team until API keys land.
-	teamID int64
 }
 
-func NewJobs(queue *services.Queue, teamID int64) *Jobs {
-	return &Jobs{queue: queue, teamID: teamID}
+func NewJobs(queue *services.Queue) *Jobs {
+	return &Jobs{queue: queue}
 }
 
 type jobRequest struct {
@@ -48,7 +48,7 @@ func (h *Jobs) Submit(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	job, created, err := h.queue.Submit(r.Context(), h.teamID, req.spec(), r.Header.Get("Idempotency-Key"))
+	job, created, err := h.queue.Submit(r.Context(), teamID(r), req.spec(), r.Header.Get("Idempotency-Key"))
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -71,7 +71,7 @@ func (h *Jobs) SubmitBatch(w http.ResponseWriter, r *http.Request) {
 	for i, j := range req.Jobs {
 		specs[i] = j.spec()
 	}
-	created, err := h.queue.SubmitBatch(r.Context(), h.teamID, specs)
+	created, err := h.queue.SubmitBatch(r.Context(), teamID(r), specs)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -99,7 +99,7 @@ func (h *Jobs) List(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	list, next, err := h.queue.List(r.Context(), h.teamID, f)
+	list, next, err := h.queue.List(r.Context(), teamID(r), f)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -112,11 +112,11 @@ func (h *Jobs) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Jobs) Get(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r)
+	id, ok := pathID(w, r, "id")
 	if !ok {
 		return
 	}
-	job, events, err := h.queue.Get(r.Context(), h.teamID, id)
+	job, events, err := h.queue.Get(r.Context(), teamID(r), id)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -125,11 +125,11 @@ func (h *Jobs) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Jobs) Cancel(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r)
+	id, ok := pathID(w, r, "id")
 	if !ok {
 		return
 	}
-	job, err := h.queue.Cancel(r.Context(), h.teamID, id)
+	job, err := h.queue.Cancel(r.Context(), teamID(r), id)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -138,16 +138,20 @@ func (h *Jobs) Cancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Jobs) Retry(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r)
+	id, ok := pathID(w, r, "id")
 	if !ok {
 		return
 	}
-	job, err := h.queue.Retry(r.Context(), h.teamID, id)
+	job, err := h.queue.Retry(r.Context(), teamID(r), id)
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
+}
+
+func teamID(r *http.Request) int64 {
+	return services.TeamFrom(r.Context()).ID
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
@@ -160,8 +164,8 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
-func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue(name), 10, 64)
 	if err != nil || id <= 0 {
 		writeError(w, http.StatusNotFound, services.ErrNotFound.Error())
 		return 0, false

@@ -192,30 +192,66 @@ func (r *Jobs) Retry(ctx context.Context, teamID, id int64) (models.Job, error) 
 	return job, err
 }
 
-// Grab claims the most urgent runnable job of one of the given types for a worker.
-// SKIP LOCKED lets many workers grab at once without waiting on, or double
-// claiming, the same row. ErrNotFound means there is nothing to do.
-func (r *Jobs) Grab(ctx context.Context, workerID string, types []string, lease time.Duration) (models.Job, error) {
+// Backlog lists, for every team under its worker cap, the oldest runnable job of
+// the given types at each priority level. It locks nothing; Grab does that.
+func (r *Jobs) Backlog(ctx context.Context, types []string) ([]models.Backlog, error) {
+	rows, err := r.db.Query(ctx, `
+		select u.team_id, p.share_weight, u.served, now() - u.served_at, level, now() - head.run_at
+		from team_usage u
+		join teams t on t.id = u.team_id
+		join plans p on p.id = t.plan_id
+		cross join generate_series(0, 9) as level
+		cross join lateral (
+			select run_at from jobs
+			where team_id = u.team_id and priority = level
+				and status in ('queued', 'failed') and run_at <= now() and type = any($1)
+			order by run_at, id
+			limit 1
+		) head
+		where u.running < p.max_workers`,
+		types)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.Backlog])
+}
+
+// Grab claims the longest-waiting runnable job at one team's priority level, as
+// long as the team is still under its worker cap, and counts it as served. SKIP
+// LOCKED lets many workers grab at once without waiting on, or double claiming,
+// the same row. ErrNotFound means the level has run dry or the team is full.
+func (r *Jobs) Grab(ctx context.Context, workerID string, teamID int64, priority int, types []string, lease, fairShareWindow time.Duration) (models.Job, error) {
 	return scanJob(r.db.QueryRow(ctx, `
-		with grabbed as (
+		with picked as (
+			select id, team_id from jobs
+			where team_id = $2 and priority = $3
+				and status in ('queued', 'failed') and run_at <= now() and type = any($4)
+			order by run_at, id
+			limit 1
+			for update skip locked
+		), slot as (
+			-- Concurrent grabs for a team queue up on this row, and each one rechecks
+			-- running against the latest count, so the cap holds.
+			update team_usage u
+			set served = u.served * exp(extract(epoch from u.served_at - now()) / $6) + 1,
+				served_at = now()
+			from picked, teams t, plans p
+			where u.team_id = picked.team_id and t.id = u.team_id and p.id = t.plan_id
+				and u.running < p.max_workers
+			returning u.team_id
+		), grabbed as (
 			update jobs
 			set status = 'running', attempts = attempts + 1, locked_by = $1,
-				lease_until = now() + make_interval(secs => $3), progress = 0,
+				lease_until = now() + make_interval(secs => $5), progress = 0,
 				started_at = now(), updated_at = now()
-			where id = (
-				select id from jobs
-				where status in ('queued', 'failed') and run_at <= now() and type = any($2)
-				order by priority desc, run_at, id
-				limit 1
-				for update skip locked
-			)
+			where id = (select id from picked) and exists (select 1 from slot)
 			returning `+jobColumns+`
 		), logged as (
 			insert into job_events (job_id, kind, message)
 			select id, 'started', format('attempt %s on %s', attempts, locked_by) from grabbed
 		)
 		select * from grabbed`,
-		workerID, types, lease.Seconds()))
+		workerID, teamID, priority, types, lease.Seconds(), fairShareWindow.Seconds()))
 }
 
 // ExtendLease pushes the lease out again. It returns false when the worker no

@@ -25,6 +25,8 @@ services:
     environment:
       DATABASE_URL: postgres://tasklane:tasklane@postgres:5432/tasklane?sslmode=disable
       LOG_FORMAT: json
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-dev-admin-token}
+      DEV_API_KEY: ${DEV_API_KEY:-tk_live_localdev}
     ports:
       - "8080:8080"
     depends_on:

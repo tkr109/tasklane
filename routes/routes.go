@@ -6,18 +6,30 @@ import (
 
 	"github.com/tkr109/tasklane/controllers"
 	"github.com/tkr109/tasklane/middleware"
+	"github.com/tkr109/tasklane/services"
 )
 
-func New(jobs *controllers.Jobs, ping func(context.Context) error) http.Handler {
+func New(jobs *controllers.Jobs, teams *controllers.Teams, auth *services.Auth, adminToken string, ping func(context.Context) error) http.Handler {
+	key := func(h http.HandlerFunc) http.Handler { return middleware.APIKey(auth, h) }
+	admin := func(h http.HandlerFunc) http.Handler { return middleware.Admin(adminToken, h) }
+
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", controllers.Healthz(ping))
 
-	mux.HandleFunc("POST /api/jobs", jobs.Submit)
-	mux.HandleFunc("POST /api/jobs/batch", jobs.SubmitBatch)
-	mux.HandleFunc("GET /api/jobs", jobs.List)
-	mux.HandleFunc("GET /api/jobs/{id}", jobs.Get)
-	mux.HandleFunc("POST /api/jobs/{id}/cancel", jobs.Cancel)
-	mux.HandleFunc("POST /api/jobs/{id}/retry", jobs.Retry)
+	mux.Handle("POST /api/jobs", key(jobs.Submit))
+	mux.Handle("POST /api/jobs/batch", key(jobs.SubmitBatch))
+	mux.Handle("GET /api/jobs", key(jobs.List))
+	mux.Handle("GET /api/jobs/{id}", key(jobs.Get))
+	mux.Handle("POST /api/jobs/{id}/cancel", key(jobs.Cancel))
+	mux.Handle("POST /api/jobs/{id}/retry", key(jobs.Retry))
+
+	mux.Handle("GET /api/plans", admin(teams.Plans))
+	mux.Handle("GET /api/teams", admin(teams.List))
+	mux.Handle("POST /api/teams", admin(teams.Create))
+	mux.Handle("PUT /api/teams/{id}/plan", admin(teams.SwitchPlan))
+	mux.Handle("GET /api/teams/{id}/keys", admin(teams.Keys))
+	mux.Handle("POST /api/teams/{id}/keys", admin(teams.CreateKey))
+	mux.Handle("POST /api/teams/{id}/keys/{key}/revoke", admin(teams.RevokeKey))
 
 	return middleware.Logging(mux)
 }

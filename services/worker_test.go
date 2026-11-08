@@ -27,6 +27,8 @@ func fastConfig() config.Worker {
 		ShutdownGrace:     2 * time.Second,
 		RetryBaseDelay:    10 * time.Millisecond,
 		RetryMaxDelay:     50 * time.Millisecond,
+		AgingStep:         30 * time.Second,
+		FairShareWindow:   time.Minute,
 	}
 }
 
@@ -130,7 +132,9 @@ func TestExpiredLeaseIsRequeued(t *testing.T) {
 	}
 
 	// A worker grabs the job and then dies without ever renewing its lease.
-	if _, err := repo.Grab(ctx, "doomed-worker", []string{"noop"}, 50*time.Millisecond); err != nil {
+	cfg := fastConfig()
+	cfg.Lease = 50 * time.Millisecond
+	if _, err := grab(ctx, repo, "doomed-worker", []string{"noop"}, cfg); err != nil {
 		t.Fatalf("grab: %v", err)
 	}
 	time.Sleep(100 * time.Millisecond)

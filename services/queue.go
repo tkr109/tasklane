@@ -12,11 +12,7 @@ import (
 	"github.com/tkr109/tasklane/repositories"
 )
 
-var (
-	ErrNotFound = errors.New("job not found")
-	ErrInvalid  = errors.New("invalid request")
-	ErrConflict = errors.New("conflict")
-)
+var errJobNotFound = fmt.Errorf("job %w", ErrNotFound)
 
 const (
 	MaxBatchSize = 500
@@ -127,7 +123,7 @@ func (q *Queue) List(ctx context.Context, teamID int64, f models.JobFilter) ([]m
 func (q *Queue) Get(ctx context.Context, teamID, id int64) (models.Job, []models.JobEvent, error) {
 	job, err := q.repo.Get(ctx, teamID, id)
 	if errors.Is(err, repositories.ErrNotFound) {
-		return job, nil, ErrNotFound
+		return job, nil, errJobNotFound
 	}
 	if err != nil {
 		return job, nil, err
@@ -154,7 +150,7 @@ func (q *Queue) explainMiss(ctx context.Context, teamID, id int64, err error, ac
 	}
 	job, err := q.repo.Get(ctx, teamID, id)
 	if errors.Is(err, repositories.ErrNotFound) {
-		return ErrNotFound
+		return errJobNotFound
 	}
 	if err != nil {
 		return err

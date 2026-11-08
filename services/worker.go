@@ -46,10 +46,6 @@ func NewWorker(repo *repositories.Jobs, workers *repositories.Workers, types job
 	}
 }
 
-func (w *Worker) ID() string {
-	return w.id
-}
-
 // Run pulls and runs jobs until ctx is cancelled. It then stops grabbing and gives
 // running jobs the shutdown grace period to finish. Whatever is still running
 // after that is abandoned, and the reaper requeues it once the lease runs out.
@@ -114,7 +110,7 @@ func (w *Worker) loop(ctx, jobCtx context.Context) {
 			return
 		}
 
-		job, err := w.repo.Grab(ctx, w.id, types, w.cfg.Lease)
+		job, err := grab(ctx, w.repo, w.id, types, w.cfg)
 		if err != nil {
 			<-slots
 			if !errors.Is(err, repositories.ErrNotFound) && ctx.Err() == nil {
@@ -130,7 +126,12 @@ func (w *Worker) loop(ctx, jobCtx context.Context) {
 		}
 
 		w.running.Go(func() {
-			defer func() { <-slots }()
+			defer func() {
+				<-slots
+				// The job also freed a slot under its team's worker cap, and nothing
+				// else announces that, so look for work right away.
+				w.nudge()
+			}()
 			w.execute(jobCtx, job)
 		})
 	}
@@ -140,12 +141,7 @@ func (w *Worker) loop(ctx, jobCtx context.Context) {
 // start right away instead of on the next poll.
 func (w *Worker) listen(ctx context.Context) {
 	for {
-		err := w.repo.ListenQueued(ctx, func() {
-			select {
-			case w.wake <- struct{}{}:
-			default:
-			}
-		})
+		err := w.repo.ListenQueued(ctx, w.nudge)
 		if ctx.Err() != nil {
 			return
 		}
@@ -155,6 +151,14 @@ func (w *Worker) listen(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// nudge wakes the grab loop if it is waiting for work.
+func (w *Worker) nudge() {
+	select {
+	case w.wake <- struct{}{}:
+	default:
 	}
 }
 

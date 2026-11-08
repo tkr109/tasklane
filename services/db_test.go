@@ -36,8 +36,8 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// testDB returns a migrated database with no jobs or workers in it. It skips the
-// test when Docker isn't available or -short is set.
+// testDB returns a migrated database with no jobs, no workers and only the
+// default team. It skips the test when Docker isn't available or -short is set.
 func testDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	if testing.Short() {
@@ -65,7 +65,11 @@ func testDB(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("start postgres: %v", pgErr)
 	}
 
-	if _, err := pgPool.Exec(context.Background(), `truncate jobs, job_events, workers restart identity`); err != nil {
+	// Truncating skips the trigger that counts running jobs, so reset the counts too.
+	if _, err := pgPool.Exec(context.Background(), `
+		truncate jobs, job_events, workers restart identity;
+		delete from teams where name <> 'default';
+		update team_usage set running = 0, served = 0, served_at = now()`); err != nil {
 		t.Fatalf("reset tables: %v", err)
 	}
 	return pgPool
