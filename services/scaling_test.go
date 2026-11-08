@@ -145,8 +145,8 @@ func TestScalerDoesNotFlap(t *testing.T) {
 		actions[d.action]++
 		current = d.to
 	}
-	if actions["up"] != 1 || actions["down"] != 0 || current != 6 {
-		t.Errorf("actions %v ending at %d workers, want one scale up and no scale down", actions, current)
+	if actions["up"] != 1 || actions["hold"] != 1 || actions["down"] != 0 || current != 6 {
+		t.Errorf("actions %v ending at %d workers, want one scale up, one hold and no scale down", actions, current)
 	}
 
 	// Once it stays empty, the scaler comes back down.

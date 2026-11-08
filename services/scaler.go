@@ -107,7 +107,7 @@ func (s *Scaler) session(ctx context.Context) error {
 			if won {
 				s.leading.Store(true)
 				// A new leader waits out a cool-down of its own before scaling down.
-				s.policy.fewerSince, s.policy.lastStepDown = time.Time{}, time.Time{}
+				s.policy.reset()
 				slog.Info("leading the scaler", "min", s.cfg.Min, "max", s.cfg.Max, "jobs_per_worker", s.cfg.JobsPerWorker)
 			}
 		}

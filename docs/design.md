@@ -272,11 +272,13 @@ acting before another takes over.
    last 10s (`HeldByLimit`) are left out, as more workers wouldn't start them any sooner.
 3. Decides. The target is `ceil(runnable / JOBS_PER_WORKER)`, at most
    `ceil(slots / WORKER_CONCURRENCY)`, clamped to `[SCALER_MIN, SCALER_MAX]` (2 and 10).
-   Above the current count, it starts the difference at once. Below it, it records a `hold`
-   and starts a cool-down (`SCALER_COOLDOWN`, 20s); if it still wants fewer when that ends,
-   it stops one worker every `SCALER_STEP_DOWN` (3s) until it doesn't. Wanting as many as it
-   has ends a cool-down, so a queue that fills and empties doesn't flap. Times are compared
-   with half a round of slack, or a round that ran a few ms late would push a 3s step to 4s.
+   Above the current count, it starts the difference at once. Below it, it starts a cool-down
+   (`SCALER_COOLDOWN`, 20s); if it still wants fewer when that ends, it stops one worker every
+   `SCALER_STEP_DOWN` (3s) until it doesn't. Wanting as many as it has ends a cool-down, so a
+   queue that fills and empties doesn't flap. A cool-down that starts records a `hold`, but only
+   the first at each pool size, so that queue doesn't fill the log with the same hold either.
+   Times are compared with half a round of slack, or a round that ran a few ms late would push
+   a 3s step to 4s.
 4. Stores an `up`, `down` or `hold` in `scaler_decisions`, publishes it as a `decision` event,
    and writes its status row, which the overview and the `stats` event carry as `scaler`.
    Once the status is three rounds old, and at least 5s, `scaler` is `null`, so a scaler that

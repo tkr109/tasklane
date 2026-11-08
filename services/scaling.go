@@ -24,6 +24,9 @@ type policy struct {
 	// zero while it doesn't.
 	fewerSince   time.Time
 	lastStepDown time.Time
+	// holdFrom is the pool size of the last hold told, or 0. Another hold at
+	// that size says nothing new.
+	holdFrom int
 }
 
 type decision struct {
@@ -56,7 +59,7 @@ func (p *policy) decide(now time.Time, d models.Demand, current int) decision {
 	dec := decision{from: current, to: current, target: target}
 	switch {
 	case target > current:
-		p.fewerSince = time.Time{}
+		p.fewerSince, p.holdFrom = time.Time{}, 0
 		dec.action, dec.to = "up", target
 		dec.reason = fmt.Sprintf("%d runnable, oldest wait %s", d.Runnable, d.OldestWait.Round(time.Second))
 		if d.Held > 0 {
@@ -67,13 +70,18 @@ func (p *policy) decide(now time.Time, d models.Demand, current int) decision {
 		}
 	case target < current && p.fewerSince.IsZero():
 		p.fewerSince = now
+		// A queue that empties and refills restarts the cool-down each time.
+		if p.holdFrom == current {
+			break
+		}
+		p.holdFrom = current
 		dec.action = "hold"
 		dec.reason = fmt.Sprintf("wants %d: waiting out the %s cool-down before scaling down", target, p.cooldown)
 	case target < current:
 		if !p.passed(p.fewerSince, p.cooldown, now) || !p.passed(p.lastStepDown, p.stepDown, now) {
 			break
 		}
-		p.lastStepDown = now
+		p.lastStepDown, p.holdFrom = now, 0
 		dec.action, dec.to = "down", current-1
 		if d.Runnable == 0 {
 			dec.reason = "queue empty, cool-down passed"
@@ -84,6 +92,11 @@ func (p *policy) decide(now time.Time, d models.Demand, current int) decision {
 		p.fewerSince = time.Time{}
 	}
 	return dec
+}
+
+// reset forgets the cool-down and the last hold.
+func (p *policy) reset() {
+	p.fewerSince, p.lastStepDown, p.holdFrom = time.Time{}, time.Time{}, 0
 }
 
 // scaleDownAt is when the cool-down ends, or nil if there is none under way.
