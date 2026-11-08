@@ -443,3 +443,26 @@ func (r *Jobs) wakeWorkers(ctx context.Context) {
 func (r *Jobs) ListenQueued(ctx context.Context, wake func()) error {
 	return listen(ctx, r.db, queuedChannel, nil, func(string) { wake() })
 }
+
+// Overview counts what the dashboard's overview shows, in one round trip. Every
+// count reads a partial index, the queued and failed jobs, or a small table.
+func (r *Jobs) Overview(ctx context.Context) (models.Snapshot, error) {
+	var s models.Snapshot
+	err := r.db.QueryRow(ctx, `
+		select
+			count(*) filter (where status = 'queued'),
+			count(*) filter (where status = 'failed'),
+			count(*) filter (where run_at <= now()),
+			coalesce(extract(epoch from now() - min(ready_at) filter (where run_at <= now())), 0)::float8,
+			(select coalesce(sum(running), 0) from team_usage),
+			(select count(*) from jobs where status = 'succeeded' and finished_at >= date_trunc('day', now())),
+			(select count(*) from jobs where status = 'dead'),
+			(select count(*) from (select distinct type, error_key from jobs where status = 'dead') g),
+			(select count(*) from workers where state = 'running'),
+			(select count(*) from workers where state = 'draining')
+		from jobs
+		where status in ('queued', 'failed')`).Scan(
+		&s.Counts.Queued, &s.Counts.Failed, &s.Runnable, &s.OldestWaitSeconds, &s.Counts.Running,
+		&s.Counts.SucceededToday, &s.Counts.Dead, &s.DeadGroups, &s.Workers.Running, &s.Workers.Draining)
+	return s, err
+}
