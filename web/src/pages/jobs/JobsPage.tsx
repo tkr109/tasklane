@@ -1,9 +1,10 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { useCallback, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
+import { describeError } from '../../api/client'
 import { listJobs } from '../../api/jobs'
 import { queryKeys } from '../../api/keys'
-import { statsQuery, teamsQuery } from '../../api/queries'
+import { statsQuery } from '../../api/queries'
 import type { Job } from '../../api/types'
 import { PageHeader } from '../../components/PageHeader'
 import { QueryNotice } from '../../components/QueryNotice'
@@ -19,7 +20,6 @@ function matches(job: Job, f: JobFilterState) {
   return (
     (!f.status || job.status === f.status) &&
     (!f.type || job.type === f.type) &&
-    (!f.team || String(job.team_id) === f.team) &&
     (!f.priority || priorityBand(job.priority) === f.priority) &&
     (!f.search || String(job.id).includes(f.search.trim()))
   )
@@ -32,7 +32,7 @@ export function JobsPage() {
   const [selected, setSelected] = useState<Set<number>>(() => new Set())
   const actions = useJobActions()
 
-  // Status and type are filtered by the API; team, priority and id search apply to the loaded rows.
+  // Status and type are filtered by the API; priority and id search apply to the loaded rows.
   const serverFilters = useMemo(
     () => ({ status: filters.status || undefined, type: filters.type || undefined }),
     [filters.status, filters.type],
@@ -44,13 +44,9 @@ export function JobsPage() {
     getNextPageParam: (last) => last.next_cursor || undefined,
   })
   const { data: stats } = useQuery(statsQuery)
-  const { data: teamsData } = useQuery(teamsQuery)
 
   const loaded = useMemo(() => jobsQuery.data?.pages.flatMap((p) => p.jobs) ?? [], [jobsQuery.data])
   const visible = useMemo(() => loaded.filter((job) => matches(job, filters)), [loaded, filters])
-
-  const teamNames = useMemo(() => new Map(teamsData?.teams.map((t) => [t.id, t.name])), [teamsData])
-  const teamName = (id: number) => teamNames.get(id) ?? `team ${id}`
 
   const typeOptions = useMemo(() => {
     const types = new Set(stats?.types.map((t) => t.type))
@@ -58,12 +54,6 @@ export function JobsPage() {
     if (filters.type) types.add(filters.type)
     return [...types].sort()
   }, [stats, loaded, filters.type])
-
-  const teamOptions = useMemo(() => {
-    if (teamsData) return teamsData.teams.map(({ id, name }) => ({ id, name }))
-    const ids = [...new Set(loaded.map((job) => job.team_id))].sort((a, b) => a - b)
-    return ids.map((id) => ({ id, name: `team ${id}` }))
-  }, [teamsData, loaded])
 
   const toggle = useCallback((id: number) => {
     setSelected((prev) => {
@@ -92,12 +82,11 @@ export function JobsPage() {
 
   return (
     <>
-      <PageHeader title="Jobs" sub="Newest first. Status and progress update as workers report in." />
+      <PageHeader title="Jobs" sub="Jobs for the team that owns the dashboard's API key, newest first. Status and progress update as workers report in." />
       <div className="card">
         <JobFilters
           filters={filters}
           types={typeOptions}
-          teams={teamOptions}
           shown={visible.length}
           onChange={update}
           onClear={clear}
@@ -128,7 +117,6 @@ export function JobsPage() {
                   </th>
                   <th>Job</th>
                   <th>Type</th>
-                  <th>Team</th>
                   <th>Priority</th>
                   <th>Status</th>
                   <th>Progress</th>
@@ -142,7 +130,6 @@ export function JobsPage() {
                   <JobRow
                     key={job.id}
                     job={job}
-                    teamName={teamName(job.team_id)}
                     selected={selected.has(job.id)}
                     now={now}
                     onToggle={toggle}
@@ -158,6 +145,9 @@ export function JobsPage() {
         )}
         <div className="tbl-foot">
           <span>Showing the {loaded.length.toLocaleString('en-US')} most recent jobs</span>
+          {jobsQuery.data && jobsQuery.error && (
+            <span className="error-text">Couldn't refresh: {describeError(jobsQuery.error)}</span>
+          )}
           <span className="grow" />
           <button
             className="btn sm"

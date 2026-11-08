@@ -7,14 +7,13 @@ import { progressLabel, progressPercent } from '../../lib/jobs'
 
 interface JobRowProps {
   job: Job
-  teamName: string
   selected: boolean
   now: number
   onToggle: (id: number) => void
   onOpen: (id: number) => void
 }
 
-export function JobRow({ job, teamName, selected, now, onToggle, onOpen }: JobRowProps) {
+export function JobRow({ job, selected, now, onToggle, onOpen }: JobRowProps) {
   return (
     <tr className={selected ? 'click selected' : 'click'} onClick={() => onOpen(job.id)}>
       <td
@@ -34,7 +33,6 @@ export function JobRow({ job, teamName, selected, now, onToggle, onOpen }: JobRo
       </td>
       <td className="mono">{job.id}</td>
       <td className="mono">{job.type}</td>
-      <td>{teamName}</td>
       <td>
         <PriorityBadge priority={job.priority} />
       </td>

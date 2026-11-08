@@ -8,13 +8,12 @@ import type { JobFilterState } from './useJobFilters'
 interface JobFiltersProps {
   filters: JobFilterState
   types: string[]
-  teams: { id: number; name: string }[]
   shown: number
   onChange: (patch: Partial<JobFilterState>) => void
   onClear: () => void
 }
 
-export function JobFilters({ filters, types, teams, shown, onChange, onClear }: JobFiltersProps) {
+export function JobFilters({ filters, types, shown, onChange, onClear }: JobFiltersProps) {
   const navigate = useNavigate()
 
   const openOnEnter = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -50,14 +49,6 @@ export function JobFilters({ filters, types, teams, shown, onChange, onClear }: 
         <option value="">All types</option>
         {types.map((t) => (
           <option key={t}>{t}</option>
-        ))}
-      </select>
-      <select className="select" aria-label="Team" value={filters.team} onChange={(e) => onChange({ team: e.target.value })}>
-        <option value="">All teams</option>
-        {teams.map((t) => (
-          <option key={t.id} value={t.id}>
-            {t.name}
-          </option>
         ))}
       </select>
       <select

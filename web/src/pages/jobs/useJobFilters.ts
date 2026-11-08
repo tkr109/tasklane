@@ -7,11 +7,10 @@ export interface JobFilterState {
   search: string
   status: JobStatus | ''
   type: string
-  team: string
   priority: PriorityBand | ''
 }
 
-const KEYS: (keyof JobFilterState)[] = ['search', 'status', 'type', 'team', 'priority']
+const KEYS: (keyof JobFilterState)[] = ['search', 'status', 'type', 'priority']
 
 const asStatus = (v: string | null): JobStatus | '' => (JOB_STATUSES.includes(v as JobStatus) ? (v as JobStatus) : '')
 
@@ -27,7 +26,6 @@ export function useJobFilters() {
       search: params.get('search') ?? '',
       status: asStatus(params.get('status')),
       type: params.get('type') ?? '',
-      team: params.get('team') ?? '',
       priority: asPriority(params.get('priority')),
     }),
     [params],
