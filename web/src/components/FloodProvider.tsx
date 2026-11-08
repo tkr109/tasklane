@@ -14,7 +14,8 @@ function stoppedMessage(err: unknown, sent: number): string {
   const wait = err.retryAfter ? ` in ${err.retryAfter}s` : ' shortly'
   if (err.status === 429) {
     const limit = err.message.replace(/^rate limit reached: /, '')
-    return `${after}The team hit its submit limit: ${limit}. There is room for more${wait}, or switch it to Enterprise on the Teams page.`
+    const upgrade = /\benterprise\b/.test(limit) ? '' : ', or switch it to Enterprise on the Teams page'
+    return `${after}The team hit its submit limit: ${limit}. There is room for more${wait}${upgrade}.`
   }
   if (err.status === 503) {
     return `${after}The queue is full, so the API is turning submits away until it drains. Try again${wait}.`
