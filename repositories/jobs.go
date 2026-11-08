@@ -51,8 +51,8 @@ func collectJobs(rows pgx.Rows) ([]models.Job, error) {
 func (r *Jobs) Create(ctx context.Context, nj models.NewJob) (job models.Job, created bool, err error) {
 	job, err = scanJob(r.db.QueryRow(ctx, `
 		with inserted as (
-			insert into jobs (team_id, type, payload, priority, max_attempts, idempotency_key, run_at)
-			values ($1, $2, $3, $4, $5, nullif($6, ''), coalesce($7, now()))
+			insert into jobs (team_id, type, payload, priority, max_attempts, idempotency_key, run_at, ready_at)
+			values ($1, $2, $3, $4, $5, nullif($6, ''), coalesce($7, now()), coalesce($7, now()))
 			on conflict (team_id, idempotency_key) do nothing
 			returning `+jobColumns+`
 		), logged as (
@@ -94,8 +94,8 @@ func (r *Jobs) CreateBatch(ctx context.Context, batch []models.NewJob) ([]models
 
 	rows, err := r.db.Query(ctx, `
 		with inserted as (
-			insert into jobs (team_id, type, payload, priority, max_attempts, run_at)
-			select team_id, type, payload::jsonb, priority, max_attempts, coalesce(run_at, now())
+			insert into jobs (team_id, type, payload, priority, max_attempts, run_at, ready_at)
+			select team_id, type, payload::jsonb, priority, max_attempts, coalesce(run_at, now()), coalesce(run_at, now())
 			from unnest($1::bigint[], $2::text[], $3::text[], $4::int[], $5::int[], $6::timestamptz[])
 				as u (team_id, type, payload, priority, max_attempts, run_at)
 			returning `+jobColumns+`
@@ -179,7 +179,7 @@ func (r *Jobs) Retry(ctx context.Context, teamID, id int64) (models.Job, error) 
 	job, err := scanJob(r.db.QueryRow(ctx, `
 		with retried as (
 			update jobs
-			set status = 'queued', attempts = 0, progress = 0, run_at = now(),
+			set status = 'queued', attempts = 0, progress = 0, run_at = now(), ready_at = now(),
 				finished_at = null, updated_at = now()
 			where id = $1 and team_id = $2 and status in ('dead', 'failed', 'cancelled')
 			returning `+jobColumns+`
@@ -198,16 +198,16 @@ func (r *Jobs) Retry(ctx context.Context, teamID, id int64) (models.Job, error) 
 // the given types at each priority level. It locks nothing; Grab does that.
 func (r *Jobs) Backlog(ctx context.Context, types []string) ([]models.Backlog, error) {
 	rows, err := r.db.Query(ctx, `
-		select u.team_id, p.share_weight, u.served, now() - u.served_at, level, now() - head.run_at
+		select u.team_id, p.share_weight, u.served, now() - u.served_at, level, now() - head.ready_at
 		from team_usage u
 		join teams t on t.id = u.team_id
 		join plans p on p.id = t.plan_id
 		cross join generate_series(0, 9) as level
 		cross join lateral (
-			select run_at from jobs
+			select ready_at from jobs
 			where team_id = u.team_id and priority = level
 				and status in ('queued', 'failed') and run_at <= now() and type = any($1)
-			order by run_at, id
+			order by ready_at, id
 			limit 1
 		) head
 		where u.running < p.max_workers`,
@@ -236,7 +236,7 @@ func (r *Jobs) Grab(ctx context.Context, workerID string, teamID int64, priority
 			select id, team_id from jobs
 			where team_id = $2 and priority = $3
 				and status in ('queued', 'failed') and run_at <= now() and type = any($4)
-			order by run_at, id
+			order by ready_at, id
 			limit 1
 			for update skip locked
 		), slot as (
@@ -301,7 +301,8 @@ func (r *Jobs) ScheduleRetry(ctx context.Context, id int64, workerID string, del
 	return r.finish(ctx, `
 		with failed as (
 			update jobs
-			set status = 'failed', run_at = now() + make_interval(secs => $3), last_error = $4,
+			set status = 'failed', run_at = now() + make_interval(secs => $3),
+				ready_at = now() + make_interval(secs => $3), last_error = $4,
 				lease_until = null, locked_by = null, updated_at = now()
 			where id = $1 and locked_by = $2 and status = 'running'
 			returning id
@@ -325,7 +326,8 @@ func (r *Jobs) MarkDead(ctx context.Context, id int64, workerID string, errMsg s
 
 // Hold puts a job the worker has just grabbed, but may not start yet because of
 // its type's rate limit, back in the queue for delay. The grab counted an attempt
-// and a turn of the team's fair share; the job never ran, so both are given back.
+// and a turn of the team's fair share; the job never ran, so both are given back,
+// and ready_at stays put so the job keeps its age.
 func (r *Jobs) Hold(ctx context.Context, id int64, workerID string, delay time.Duration, reason string) error {
 	return r.finish(ctx, `
 		with held as (
