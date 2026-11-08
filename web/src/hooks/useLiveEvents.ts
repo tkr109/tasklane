@@ -10,7 +10,7 @@ import {
   type TeamUsageUpdate,
   type WorkerUpdate,
 } from '../api/live'
-import type { JobDetail, JobPage, Stats, TeamRate, TeamSummary, WorkersResponse } from '../api/types'
+import type { Job, JobDetail, JobPage, Stats, TeamRate, TeamSummary, WorkersResponse } from '../api/types'
 
 export type LiveStatus = 'connecting' | 'live' | 'offline'
 
@@ -47,6 +47,7 @@ export function useLiveEvents(): LiveStatus {
           (prev) => prev && { ...prev, decisions: [decision, ...prev.decisions].slice(0, DECISION_LIMIT) },
         ),
       team_usage: (usage) => applyTeamUsage(queryClient, usage),
+      reset: () => void queryClient.invalidateQueries(),
     }
 
     for (const name of LIVE_EVENT_NAMES) {
@@ -104,6 +105,8 @@ function throttledInvalidate(queryClient: QueryClient): RefetchSoon {
 }
 
 function applyJobUpdate(queryClient: QueryClient, update: JobUpdate, refetchSoon: RefetchSoon) {
+  const { locked_by, last_error, ...fields } = update
+  const patch: Partial<Job> = { ...fields, locked_by: locked_by ?? undefined, last_error: last_error ?? undefined }
   let seen = false
   queryClient.setQueriesData<InfiniteData<JobPage>>({ queryKey: [...queryKeys.jobs, 'list'] }, (data) => {
     if (!data) return data
@@ -112,7 +115,7 @@ function applyJobUpdate(queryClient: QueryClient, update: JobUpdate, refetchSoon
       if (index === -1) return page
       seen = true
       const jobs = [...page.jobs]
-      jobs[index] = { ...jobs[index], ...update }
+      jobs[index] = { ...jobs[index], ...patch }
       return { ...page, jobs }
     })
     return { ...data, pages }
@@ -124,7 +127,8 @@ function applyJobUpdate(queryClient: QueryClient, update: JobUpdate, refetchSoon
   const detailKey = queryKeys.job(update.id)
   const detail = queryClient.getQueryData<JobDetail>(detailKey)
   if (detail) {
-    queryClient.setQueryData<JobDetail>(detailKey, { ...detail, ...update })
+    // The event's error may be cut short; a refetch brings the whole one.
+    queryClient.setQueryData<JobDetail>(detailKey, { ...detail, ...patch, last_error: detail.last_error })
     // Progress can be patched in place, but a new status or attempt adds timeline events.
     if (detail.status !== update.status || detail.attempts !== update.attempts) refetchSoon(detailKey)
   }

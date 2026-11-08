@@ -100,6 +100,9 @@ const HOUR = 60 * MINUTE
 
 const iso = (ms: number) => new Date(ms).toISOString()
 
+// Times in the event stream come from Postgres, which writes UTC as +00:00.
+const pgTime = (at: string) => at.replace(/Z$/, '+00:00')
+
 const bearer = (authorization: string | null) => authorization?.match(/^Bearer (.+)$/)?.[1].trim() ?? ''
 
 const newSecret = () => `tk_live_${hex(32)}`
@@ -663,10 +666,10 @@ export class World {
       status: job.status,
       progress: Math.floor(job.progress),
       attempts: job.attempts,
-      run_at: job.run_at,
-      locked_by: job.locked_by,
-      last_error: job.last_error,
-      updated_at: job.updated_at,
+      run_at: pgTime(job.run_at),
+      locked_by: job.locked_by ?? null,
+      last_error: job.last_error?.slice(0, 200) ?? null,
+      updated_at: pgTime(job.updated_at),
     }
     this.emit('job', update)
   }
