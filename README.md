@@ -326,6 +326,9 @@ go test -short ./...   # unit tests only, no Docker needed
 make test              # everything, integration tests included; needs Docker running
 ```
 
+Without Docker the integration tests skip rather than fail, so a green `make test` on a machine
+with no Docker running is not a full run; check for `SKIP` with `go test -v`.
+
 Unit tests cover backoff, fair share picking, the scaler's arithmetic, rate limit maths, the
 progress throttle, cron parsing, and event encoding and replay. Integration tests start a real
 Postgres 16 (and Mailpit for email) with testcontainers and cover double grabs, lease expiry,
