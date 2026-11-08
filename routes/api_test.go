@@ -89,12 +89,17 @@ type api struct {
 }
 
 func newAPI(t *testing.T, cacheTTL time.Duration) *api {
+	return newAPIWithCeiling(t, cacheTTL, 0)
+}
+
+// newAPIWithCeiling is newAPI with submits turned away once ceiling jobs wait.
+func newAPIWithCeiling(t *testing.T, cacheTTL time.Duration, ceiling int) *api {
 	pool := testDB(t)
 	keys := repositories.NewKeys(pool)
 	auth := services.NewAuth(keys, cacheTTL)
 	handler := New(
 		controllers.NewJobs(services.NewQueue(repositories.NewJobs(pool), jobs.Defaults()),
-			services.NewLimits(repositories.NewRateBuckets(pool), repositories.NewJobs(pool), 0)),
+			services.NewLimits(repositories.NewRateBuckets(pool), repositories.NewJobs(pool), ceiling)),
 		controllers.NewTeams(services.NewTeams(repositories.NewTeams(pool), keys, auth)),
 		auth, adminToken, pool.Ping,
 	)
@@ -106,6 +111,12 @@ func newAPI(t *testing.T, cacheTTL time.Duration) *api {
 // call sends body as JSON with token as the bearer, and decodes the reply into out
 // if out is not nil.
 func (a *api) call(method, path, token string, body, out any) int {
+	a.t.Helper()
+	return a.do(method, path, token, body, out).StatusCode
+}
+
+// do is call returning the whole response. Its body has already been read.
+func (a *api) do(method, path, token string, body, out any) *http.Response {
 	a.t.Helper()
 	var buf bytes.Buffer
 	if body != nil {
@@ -130,7 +141,7 @@ func (a *api) call(method, path, token string, body, out any) int {
 			a.t.Fatalf("%s %s: decode: %v", method, path, err)
 		}
 	}
-	return resp.StatusCode
+	return resp
 }
 
 type team struct {
@@ -393,4 +404,103 @@ func TestDevKeyWorksForTheDefaultTeam(t *testing.T) {
 	if err := teams.EnsureDevKey(ctx, "localdev"); err == nil {
 		t.Error("a dev key without the tk_live_ prefix was accepted")
 	}
+}
+
+func batchOf(n int) map[string]any {
+	jobs := make([]map[string]string, n)
+	for i := range jobs {
+		jobs[i] = map[string]string{"type": "sleep"}
+	}
+	return map[string]any{"jobs": jobs}
+}
+
+func headerInt(t *testing.T, resp *http.Response, name string) int {
+	t.Helper()
+	n, err := strconv.Atoi(resp.Header.Get(name))
+	if err != nil {
+		t.Fatalf("header %s = %q", name, resp.Header.Get(name))
+	}
+	return n
+}
+
+func TestSubmitsOverTheRateLimitGet429(t *testing.T) {
+	a := newAPI(t, time.Minute)
+	acme, key := a.createTeam("acme", "free") // 100 jobs a minute, a burst of 200
+	one := map[string]string{"type": "sleep"}
+
+	resp := a.do("POST", "/api/jobs/batch", key.Key, batchOf(150), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("batch of 150: status %d", resp.StatusCode)
+	}
+	if limit, left := headerInt(t, resp, "X-RateLimit-Limit"), headerInt(t, resp, "X-RateLimit-Remaining"); limit != 200 || left != 50 {
+		t.Fatalf("after a batch of 150: limit %d, remaining %d, want 200 and 50", limit, left)
+	}
+
+	resp = a.do("POST", "/api/jobs/batch", key.Key, batchOf(60), nil)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("batch of 60 with 50 left: status %d, want 429", resp.StatusCode)
+	}
+	// Ten more tokens at 100 a minute is six seconds.
+	if wait := headerInt(t, resp, "Retry-After"); wait < 5 || wait > 6 {
+		t.Errorf("Retry-After = %d, want about 6", wait)
+	}
+	if code := a.call("POST", "/api/jobs/batch", key.Key, batchOf(201), nil); code != http.StatusBadRequest {
+		t.Errorf("batch bigger than the burst: status %d, want 400", code)
+	}
+
+	resp = a.do("POST", "/api/jobs/batch", key.Key, batchOf(50), nil)
+	if resp.StatusCode != http.StatusCreated || headerInt(t, resp, "X-RateLimit-Remaining") != 0 {
+		t.Fatalf("batch of the last 50: status %d, remaining %s", resp.StatusCode, resp.Header.Get("X-RateLimit-Remaining"))
+	}
+	resp = a.do("POST", "/api/jobs", key.Key, one, nil)
+	if resp.StatusCode != http.StatusTooManyRequests || headerInt(t, resp, "Retry-After") != 1 {
+		t.Fatalf("empty bucket: status %d, Retry-After %q, want 429 and 1", resp.StatusCode, resp.Header.Get("Retry-After"))
+	}
+
+	waitUntil(t, 2*time.Second, "the bucket to refill a token", func() bool {
+		return a.call("POST", "/api/jobs", key.Key, one, nil) == http.StatusCreated
+	})
+
+	var teams struct {
+		Teams []struct {
+			ID    int64 `json:"id"`
+			Usage struct {
+				JobsLastMinute int `json:"jobs_last_minute"`
+			} `json:"usage"`
+		} `json:"teams"`
+	}
+	if code := a.call("GET", "/api/teams", adminToken, nil, &teams); code != http.StatusOK {
+		t.Fatalf("list teams: status %d", code)
+	}
+	for _, tm := range teams.Teams {
+		if tm.ID == acme.ID && tm.Usage.JobsLastMinute != 201 {
+			t.Errorf("jobs_last_minute = %d, want 201", tm.Usage.JobsLastMinute)
+		}
+	}
+}
+
+func TestOverloadedQueueGets503(t *testing.T) {
+	a := newAPIWithCeiling(t, time.Minute, 5)
+	_, key := a.createTeam("acme", "pro")
+	one := map[string]string{"type": "sleep"}
+
+	if code := a.call("POST", "/api/jobs/batch", key.Key, batchOf(5), nil); code != http.StatusCreated {
+		t.Fatalf("batch of 5: status %d", code)
+	}
+	// The API counts the queue at most once a second, so the 503 can lag a little.
+	var resp *http.Response
+	waitUntil(t, 3*time.Second, "submits to be turned away", func() bool {
+		resp = a.do("POST", "/api/jobs", key.Key, one, nil)
+		return resp.StatusCode == http.StatusServiceUnavailable
+	})
+	if wait := headerInt(t, resp, "Retry-After"); wait < 1 {
+		t.Errorf("Retry-After = %d", wait)
+	}
+
+	if _, err := pgPool.Exec(context.Background(), `update jobs set status = 'cancelled'`); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 3*time.Second, "submits to be accepted once the queue drained", func() bool {
+		return a.call("POST", "/api/jobs", key.Key, one, nil) == http.StatusCreated
+	})
 }

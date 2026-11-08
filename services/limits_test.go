@@ -2,11 +2,16 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/tkr109/tasklane/jobs"
 	"github.com/tkr109/tasklane/models"
+	"github.com/tkr109/tasklane/repositories"
 )
 
 func TestUntilTokens(t *testing.T) {
@@ -48,4 +53,85 @@ func TestTypeBurst(t *testing.T) {
 			t.Errorf("typeBurst(%v) = %d, want %d", rate, got, want)
 		}
 	}
+}
+
+func TestTypeLimitHoldsAcrossWorkers(t *testing.T) {
+	pool := testDB(t)
+	ctx := context.Background()
+	const (
+		rate  = 20
+		total = 60
+	)
+
+	var (
+		mu     sync.Mutex
+		starts []time.Time
+	)
+	types := jobs.Registry{"limited": {Timeout: 5 * time.Second, Handler: func(context.Context, json.RawMessage, jobs.Progress) error {
+		mu.Lock()
+		starts = append(starts, time.Now())
+		mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+		return nil
+	}}}
+
+	once := 1
+	specs := make([]JobSpec, total)
+	for i := range specs {
+		specs[i] = JobSpec{Type: "limited", MaxAttempts: &once}
+	}
+	repo := repositories.NewJobs(pool)
+	if _, err := NewQueue(repo, types).SubmitBatch(ctx, defaultTeam(t, pool), specs); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := fastConfig()
+	cfg.TypeLimits = map[string]float64{"limited": rate}
+	startWorkerWith(t, pool, types, cfg)
+	startWorkerWith(t, pool, types, cfg)
+
+	waitUntil(t, 5*time.Second, "the limit to hold jobs back", func() bool {
+		held, err := repo.HeldByLimit(ctx, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return held["limited"] > 0
+	})
+	waitUntil(t, 20*time.Second, "every job to succeed", func() bool {
+		var n int
+		_ = pool.QueryRow(ctx, `select count(*) from jobs where status = 'succeeded'`).Scan(&n)
+		return n == total
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	slices.SortFunc(starts, func(a, b time.Time) int { return a.Compare(b) })
+	// A bucket lets through its burst plus the rate; one more covers the gap
+	// between taking a token and the handler starting.
+	most := typeBurst(rate) + rate + 1
+	for i, from := range starts {
+		in := 0
+		for _, at := range starts[i:] {
+			if at.Sub(from) >= time.Second {
+				break
+			}
+			in++
+		}
+		if in > most {
+			t.Fatalf("%d jobs started within a second of %v, the limit allows %d", in, from.Format(time.StampMilli), most)
+		}
+	}
+
+	var burned int
+	if err := pool.QueryRow(ctx, `select count(*) from jobs where attempts <> 1`).Scan(&burned); err != nil {
+		t.Fatal(err)
+	}
+	if burned != 0 {
+		t.Errorf("%d jobs used more than one attempt", burned)
+	}
+	held := countEvents(t, pool, "throttled")
+	if held == 0 {
+		t.Error("no job was held back, so the test didn't exercise the limit")
+	}
+	t.Logf("%d jobs ran in %v with %d holds", total, starts[len(starts)-1].Sub(starts[0]).Round(time.Millisecond), held)
 }
