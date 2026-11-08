@@ -39,7 +39,7 @@ func TestUntilTokens(t *testing.T) {
 }
 
 func TestAdmitRefusesMoreThanTheBurst(t *testing.T) {
-	limits := NewLimits(nil, nil, 0)
+	limits := NewLimits(nil, nil, nil, 0)
 	team := models.Team{ID: 1, Plan: models.Plan{Name: "free", JobsPerMinute: 100, Burst: 200}}
 	if _, err := limits.Admit(context.Background(), team, 201); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("a batch over the burst: err = %v, want ErrInvalid", err)

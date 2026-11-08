@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"sync"
 	"time"
@@ -45,6 +46,7 @@ type Quota struct {
 type Limits struct {
 	buckets *repositories.RateBuckets
 	jobs    *repositories.Jobs
+	events  *Events
 	ceiling int
 
 	mu        sync.Mutex
@@ -52,8 +54,8 @@ type Limits struct {
 	countedAt time.Time
 }
 
-func NewLimits(buckets *repositories.RateBuckets, jobs *repositories.Jobs, ceiling int) *Limits {
-	return &Limits{buckets: buckets, jobs: jobs, ceiling: ceiling}
+func NewLimits(buckets *repositories.RateBuckets, jobs *repositories.Jobs, events *Events, ceiling int) *Limits {
+	return &Limits{buckets: buckets, jobs: jobs, events: events, ceiling: ceiling}
 }
 
 // Admit charges n jobs to the team's bucket. A refusal for now is a *TryLater.
@@ -74,6 +76,10 @@ func (l *Limits) Admit(ctx context.Context, team models.Team, n int) (Quota, err
 	}
 	quota := Quota{Limit: plan.Burst, Remaining: int(left)}
 	if !ok {
+		// The teams page shows refusals; losing one only makes that number low.
+		if err := l.events.Publish(ctx, "rejected", rejectedJobs{TeamID: team.ID, Jobs: n}); err != nil {
+			slog.Warn("publish a rejection", "team", team.ID, "err", err)
+		}
 		return quota, &TryLater{
 			Err:   fmt.Errorf("%w: the %s plan allows %d jobs a minute", ErrRateLimited, plan.Name, plan.JobsPerMinute),
 			After: untilTokens(left, n, rate),

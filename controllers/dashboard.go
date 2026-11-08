@@ -18,6 +18,15 @@ func NewDashboard(monitor *services.Monitor, dead *services.DeadJobs) *Dashboard
 	return &Dashboard{monitor: monitor, dead: dead}
 }
 
+func (h *Dashboard) Stats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.monitor.Stats(r.Context())
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
 func (h *Dashboard) Workers(w http.ResponseWriter, r *http.Request) {
 	workers, err := h.monitor.Workers(r.Context())
 	if err != nil {

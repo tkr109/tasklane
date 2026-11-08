@@ -87,7 +87,8 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 
 	keys := repositories.NewKeys(pool)
 	auth := services.NewAuth(keys, cfg.API.AuthCacheTTL)
-	teams := services.NewTeams(repositories.NewTeams(pool), keys, auth)
+	teamsRepo := repositories.NewTeams(pool)
+	teams := services.NewTeams(teamsRepo, keys, auth)
 	if cfg.API.DevAPIKey != "" {
 		if err := teams.EnsureDevKey(ctx, cfg.API.DevAPIKey); err != nil {
 			return fmt.Errorf("dev api key: %w", err)
@@ -101,25 +102,29 @@ func runAPI(ctx context.Context, cfg config.Config) error {
 	jobsRepo := repositories.NewJobs(pool)
 	schedules := repositories.NewSchedules(pool)
 	events := services.NewEvents(repositories.NewEvents(pool))
-	// Every api runs a scheduler; the one holding the advisory lock fires schedules.
+	monitor := services.NewMonitor(jobsRepo, repositories.NewWorkers(pool), teamsRepo, events,
+		jobs.Defaults(), cfg.Worker.TypeLimits, cfg.API.QueueCeiling)
+	// Every api runs a scheduler; the one holding the advisory lock fires schedules,
+	// and publishes the stats.
 	scheduler := services.NewScheduler(schedules, cfg.API.SchedulerTick)
 
 	bgCtx, stopBackground := context.WithCancel(ctx)
 	var background sync.WaitGroup
 	background.Go(func() { scheduler.Run(bgCtx) })
 	background.Go(func() { events.Run(bgCtx) })
+	background.Go(func() { monitor.Run(bgCtx, scheduler.Leading) })
 	defer func() {
 		stopBackground()
 		background.Wait()
 	}()
 
 	queue := services.NewQueue(jobsRepo, jobs.Defaults())
-	limits := services.NewLimits(repositories.NewRateBuckets(pool), jobsRepo, cfg.API.QueueCeiling)
+	limits := services.NewLimits(repositories.NewRateBuckets(pool), jobsRepo, events, cfg.API.QueueCeiling)
 	handler := routes.New(
 		controllers.NewJobs(queue, limits),
 		controllers.NewSchedules(services.NewSchedules(schedules, jobs.Defaults(), cfg.API.MaxSchedulesPerTeam)),
 		controllers.NewTeams(teams),
-		controllers.NewDashboard(services.NewMonitor(repositories.NewWorkers(pool)), services.NewDeadJobs(jobsRepo)),
+		controllers.NewDashboard(monitor, services.NewDeadJobs(jobsRepo)),
 		controllers.NewEvents(events),
 		auth,
 		cfg.API.AdminToken,

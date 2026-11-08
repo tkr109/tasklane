@@ -75,7 +75,8 @@ func testDB(t *testing.T) *pgxpool.Pool {
 	}
 	if _, err := pgPool.Exec(context.Background(), `
 		truncate jobs, job_events, api_keys, rate_buckets, workers restart identity;
-		delete from teams where name <> 'default'`); err != nil {
+		delete from teams where name <> 'default';
+		update team_usage set running = 0, served = 0, served_at = now()`); err != nil {
 		t.Fatalf("reset tables: %v", err)
 	}
 	return pgPool
@@ -84,10 +85,11 @@ func testDB(t *testing.T) *pgxpool.Pool {
 // api is the whole HTTP stack on a test server, plus the services behind it that
 // tests look into.
 type api struct {
-	t      *testing.T
-	srv    *httptest.Server
-	auth   *services.Auth
-	events *services.Events
+	t       *testing.T
+	srv     *httptest.Server
+	auth    *services.Auth
+	events  *services.Events
+	monitor *services.Monitor
 }
 
 func newAPI(t *testing.T, cacheTTL time.Duration) *api {
@@ -99,13 +101,16 @@ func newAPIWith(t *testing.T, cfg config.API) *api {
 	pool := testDB(t)
 	keys := repositories.NewKeys(pool)
 	auth := services.NewAuth(keys, cfg.AuthCacheTTL)
+	jobsRepo := repositories.NewJobs(pool)
 	events := services.NewEvents(repositories.NewEvents(pool))
+	monitor := services.NewMonitor(jobsRepo, repositories.NewWorkers(pool), repositories.NewTeams(pool), events,
+		jobs.Defaults(), map[string]float64{"flaky": 5}, cfg.QueueCeiling)
 	handler := New(
-		controllers.NewJobs(services.NewQueue(repositories.NewJobs(pool), jobs.Defaults()),
-			services.NewLimits(repositories.NewRateBuckets(pool), repositories.NewJobs(pool), cfg.QueueCeiling)),
+		controllers.NewJobs(services.NewQueue(jobsRepo, jobs.Defaults()),
+			services.NewLimits(repositories.NewRateBuckets(pool), jobsRepo, events, cfg.QueueCeiling)),
 		controllers.NewSchedules(services.NewSchedules(repositories.NewSchedules(pool), jobs.Defaults(), cfg.MaxSchedulesPerTeam)),
 		controllers.NewTeams(services.NewTeams(repositories.NewTeams(pool), keys, auth)),
-		controllers.NewDashboard(services.NewMonitor(repositories.NewWorkers(pool)), services.NewDeadJobs(repositories.NewJobs(pool))),
+		controllers.NewDashboard(monitor, services.NewDeadJobs(jobsRepo)),
 		controllers.NewEvents(events),
 		auth, adminToken, pool.Ping,
 	)
@@ -124,7 +129,7 @@ func newAPIWith(t *testing.T, cfg config.API) *api {
 		<-done
 		events.Close()
 	})
-	return &api{t: t, srv: srv, auth: auth, events: events}
+	return &api{t: t, srv: srv, auth: auth, events: events, monitor: monitor}
 }
 
 // call sends body as JSON with token as the bearer, and decodes the reply into out
