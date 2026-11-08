@@ -1,0 +1,11 @@
+/tasklane
+/bin/
+*.test
+*.out
+coverage.*
+.env
+.DS_Store
+.idea/
+.vscode/
+node_modules/
+web/dist/
