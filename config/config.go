@@ -13,7 +13,15 @@ type Config struct {
 	HTTPAddr    string
 	LogLevel    slog.Level
 	LogFormat   string
+	API         API
 	Worker      Worker
+}
+
+type API struct {
+	AdminToken   string
+	AuthCacheTTL time.Duration
+	// DevAPIKey, when set, is registered as a key for the default team on startup.
+	DevAPIKey string
 }
 
 type Worker struct {
@@ -33,6 +41,11 @@ func Load() (Config, error) {
 		DatabaseURL: l.str("DATABASE_URL", "postgres://tasklane:tasklane@localhost:5432/tasklane?sslmode=disable"),
 		HTTPAddr:    l.str("HTTP_ADDR", ":8080"),
 		LogFormat:   l.str("LOG_FORMAT", "text"),
+		API: API{
+			AdminToken:   l.str("ADMIN_TOKEN", ""),
+			AuthCacheTTL: l.duration("AUTH_CACHE_TTL", 5*time.Second),
+			DevAPIKey:    l.str("DEV_API_KEY", ""),
+		},
 		Worker: Worker{
 			Concurrency:       l.int("WORKER_CONCURRENCY", 4),
 			Lease:             l.duration("WORKER_LEASE", 30*time.Second),
