@@ -1,0 +1,48 @@
+name: tasklane
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tasklane
+      POSTGRES_PASSWORD: tasklane
+      POSTGRES_DB: tasklane
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tasklane -d tasklane"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["api"]
+    environment:
+      DATABASE_URL: postgres://tasklane:tasklane@postgres:5432/tasklane?sslmode=disable
+      LOG_FORMAT: json
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["worker"]
+    environment:
+      DATABASE_URL: postgres://tasklane:tasklane@postgres:5432/tasklane?sslmode=disable
+      LOG_FORMAT: json
+    stop_grace_period: 40s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
