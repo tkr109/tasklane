@@ -12,6 +12,7 @@ type Snapshot struct {
 	QueueCeiling int          `json:"queue_ceiling"`
 	DeadGroups   int          `json:"dead_groups"`
 	Workers      WorkerCounts `json:"workers"`
+	Scaler       ScalerStatus `json:"scaler"`
 	Types        []TypeStats  `json:"types"`
 }
 

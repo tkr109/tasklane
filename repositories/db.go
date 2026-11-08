@@ -23,6 +23,7 @@ var ErrNotFound = errors.New("not found")
 const (
 	reaperLock    int64 = 7_400_001
 	schedulerLock int64 = 7_400_002
+	scalerLock    int64 = 7_400_003
 )
 
 func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {

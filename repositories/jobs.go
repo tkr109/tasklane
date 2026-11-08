@@ -445,6 +445,32 @@ func (r *Jobs) ListenQueued(ctx context.Context, wake func()) error {
 	return listen(ctx, r.db, queuedChannel, nil, func(string) { wake() })
 }
 
+// Demand measures the work waiting for workers, leaving out the job types in
+// skip. Slots adds up each team's waiting and running jobs, up to its plan's cap.
+func (r *Jobs) Demand(ctx context.Context, skip []string) (models.Demand, error) {
+	var (
+		d    models.Demand
+		wait float64
+	)
+	err := r.db.QueryRow(ctx, `
+		with waiting as (
+			select team_id, count(*) as jobs, min(ready_at) as oldest from jobs
+			where status in ('queued', 'failed') and run_at <= now() and type <> all($1)
+			group by team_id
+		)
+		select coalesce(sum(w.jobs), 0)::int,
+			coalesce(extract(epoch from now() - min(w.oldest)), 0)::float8,
+			coalesce(sum(least(coalesce(w.jobs, 0) + u.running, p.max_workers)), 0)::int
+		from team_usage u
+		join teams t on t.id = u.team_id
+		join plans p on p.id = t.plan_id
+		left join waiting w on w.team_id = u.team_id`,
+		// A nil slice goes as NULL, and type <> all(NULL) would match nothing.
+		append([]string{}, skip...)).Scan(&d.Runnable, &wait, &d.Slots)
+	d.OldestWait = time.Duration(wait * float64(time.Second))
+	return d, err
+}
+
 // Overview counts what the dashboard's overview shows, in one round trip. Every
 // count reads a partial index, the queued and failed jobs, or a small table.
 func (r *Jobs) Overview(ctx context.Context) (models.Snapshot, error) {
@@ -461,11 +487,12 @@ func (r *Jobs) Overview(ctx context.Context) (models.Snapshot, error) {
 			(select count(*) from (select distinct type, error_key from jobs where status = 'dead') g),
 			(select count(*) from workers where state = 'running'),
 			(select count(*) from workers where state = 'starting'),
-			(select count(*) from workers where state = 'draining')
+			(select count(*) from workers where state = 'draining'),
+			coalesce((select status from scaler_status), '{}')
 		from jobs
 		where status in ('queued', 'failed')`).Scan(
 		&s.Counts.Queued, &s.Counts.Failed, &s.Runnable, &s.OldestWaitSeconds, &s.Counts.Running,
 		&s.Counts.SucceededToday, &s.Counts.Dead, &s.DeadGroups, &s.Workers.Running, &s.Workers.Starting,
-		&s.Workers.Draining)
+		&s.Workers.Draining, &s.Scaler)
 	return s, err
 }
