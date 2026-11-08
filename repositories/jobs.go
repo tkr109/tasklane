@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -176,4 +177,100 @@ func (r *Jobs) Retry(ctx context.Context, teamID, id int64) (models.Job, error) 
 		)
 		select * from retried`,
 		id, teamID))
+}
+
+// Grab claims the most urgent runnable job of one of the given types for a worker.
+// SKIP LOCKED lets many workers grab at once without waiting on, or double
+// claiming, the same row. ErrNotFound means there is nothing to do.
+func (r *Jobs) Grab(ctx context.Context, workerID string, types []string, lease time.Duration) (models.Job, error) {
+	return scanJob(r.db.QueryRow(ctx, `
+		with grabbed as (
+			update jobs
+			set status = 'running', attempts = attempts + 1, locked_by = $1,
+				lease_until = now() + make_interval(secs => $3), progress = 0,
+				started_at = now(), updated_at = now()
+			where id = (
+				select id from jobs
+				where status in ('queued', 'failed') and run_at <= now() and type = any($2)
+				order by priority desc, run_at, id
+				limit 1
+				for update skip locked
+			)
+			returning `+jobColumns+`
+		), logged as (
+			insert into job_events (job_id, kind, message)
+			select id, 'started', format('attempt %s on %s', attempts, locked_by) from grabbed
+		)
+		select * from grabbed`,
+		workerID, types, lease.Seconds()))
+}
+
+// ExtendLease pushes the lease out again. It returns false when the worker no
+// longer holds the job, for example because the reaper took it back.
+func (r *Jobs) ExtendLease(ctx context.Context, id int64, workerID string, lease time.Duration) (bool, error) {
+	tag, err := r.db.Exec(ctx, `
+		update jobs set lease_until = now() + make_interval(secs => $3)
+		where id = $1 and locked_by = $2 and status = 'running'`,
+		id, workerID, lease.Seconds())
+	return tag.RowsAffected() == 1, err
+}
+
+func (r *Jobs) SetProgress(ctx context.Context, id int64, workerID string, percent int) error {
+	_, err := r.db.Exec(ctx, `
+		update jobs set progress = $3, updated_at = now()
+		where id = $1 and locked_by = $2 and status = 'running'`,
+		id, workerID, percent)
+	return err
+}
+
+// Succeed, ScheduleRetry and MarkDead only touch a job the worker still holds, and
+// return ErrNotFound when it doesn't.
+func (r *Jobs) Succeed(ctx context.Context, id int64, workerID string) error {
+	return r.finish(ctx, `
+		with done as (
+			update jobs
+			set status = 'succeeded', progress = 100, last_error = null, lease_until = null,
+				locked_by = null, finished_at = now(), updated_at = now()
+			where id = $1 and locked_by = $2 and status = 'running'
+			returning id
+		)
+		insert into job_events (job_id, kind) select id, 'succeeded' from done`,
+		id, workerID)
+}
+
+func (r *Jobs) ScheduleRetry(ctx context.Context, id int64, workerID string, delay time.Duration, errMsg string) error {
+	return r.finish(ctx, `
+		with failed as (
+			update jobs
+			set status = 'failed', run_at = now() + make_interval(secs => $3), last_error = $4,
+				lease_until = null, locked_by = null, updated_at = now()
+			where id = $1 and locked_by = $2 and status = 'running'
+			returning id
+		)
+		insert into job_events (job_id, kind, message) select id, 'failed', $4 from failed`,
+		id, workerID, delay.Seconds(), errMsg)
+}
+
+func (r *Jobs) MarkDead(ctx context.Context, id int64, workerID string, errMsg string) error {
+	return r.finish(ctx, `
+		with dead as (
+			update jobs
+			set status = 'dead', last_error = $3, lease_until = null, locked_by = null,
+				finished_at = now(), updated_at = now()
+			where id = $1 and locked_by = $2 and status = 'running'
+			returning id
+		)
+		insert into job_events (job_id, kind, message) select id, 'dead', $3 from dead`,
+		id, workerID, errMsg)
+}
+
+func (r *Jobs) finish(ctx context.Context, query string, args ...any) error {
+	tag, err := r.db.Exec(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
